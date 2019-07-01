@@ -1,0 +1,2781 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="918" onload="init(evt)" viewBox="0 0 1200 918" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="918.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="901" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="matched" x="1090.00" y="901" > </text>
+<g id="frames">
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_read_from_socket:174 (3 samples, 0.10%)</title><rect x="1170.9" y="261" width="1.2" height="15.0" fill="rgb(220,46,11)" rx="2" ry="2" />
+<text  x="1173.88" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:delete:100 (2 samples, 0.07%)</title><rect x="1117.2" y="389" width="0.8" height="15.0" fill="rgb(210,123,47)" rx="2" ry="2" />
+<text  x="1120.19" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:urlopen:617 (1 samples, 0.03%)</title><rect x="1018.8" y="277" width="0.4" height="15.0" fill="rgb(251,26,18)" rx="2" ry="2" />
+<text  x="1021.76" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:request:519 (3 samples, 0.10%)</title><rect x="1022.4" y="341" width="1.2" height="15.0" fill="rgb(243,119,28)" rx="2" ry="2" />
+<text  x="1025.42" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:parse:164 (2 samples, 0.07%)</title><rect x="1002.9" y="773" width="0.8" height="15.0" fill="rgb(210,91,13)" rx="2" ry="2" />
+<text  x="1005.89" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/lock.py:release:239 (1 samples, 0.03%)</title><rect x="1009.8" y="565" width="0.4" height="15.0" fill="rgb(206,191,33)" rx="2" ry="2" />
+<text  x="1012.81" y="575.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socketcommon.py:_sendall:342 (2 samples, 0.07%)</title><rect x="1173.3" y="261" width="0.8" height="15.0" fill="rgb(233,113,18)" rx="2" ry="2" />
+<text  x="1176.32" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/middleware/common.py:should_redirect_with_slash:81 (2 samples, 0.07%)</title><rect x="1010.6" y="613" width="0.8" height="15.0" fill="rgb(229,62,19)" rx="2" ry="2" />
+<text  x="1013.62" y="623.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:get_user_info:88 (1 samples, 0.03%)</title><rect x="1178.2" y="405" width="0.4" height="15.0" fill="rgb(244,83,13)" rx="2" ry="2" />
+<text  x="1181.20" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:consume_gold:379 (11 samples, 0.38%)</title><rect x="1022.0" y="389" width="4.5" height="15.0" fill="rgb(222,136,23)" rx="2" ry="2" />
+<text  x="1025.01" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/structures.py:__init__:41 (1 samples, 0.03%)</title><rect x="1022.0" y="309" width="0.4" height="15.0" fill="rgb(235,189,43)" rx="2" ry="2" />
+<text  x="1025.01" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/tools.py:wrapper:23 (1 samples, 0.03%)</title><rect x="1014.7" y="437" width="0.4" height="15.0" fill="rgb(223,145,3)" rx="2" ry="2" />
+<text  x="1017.69" y="447.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:connect:484 (1 samples, 0.03%)</title><rect x="1136.7" y="261" width="0.4" height="15.0" fill="rgb(226,45,4)" rx="2" ry="2" />
+<text  x="1139.71" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:try_bet:291 (223 samples, 7.69%)</title><rect x="1026.5" y="405" width="90.7" height="15.0" fill="rgb(243,106,1)" rx="2" ry="2" />
+<text  x="1029.48" y="415.5" >/usr/local..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/response.py:__init__:155 (1 samples, 0.03%)</title><rect x="1025.3" y="261" width="0.4" height="15.0" fill="rgb(227,112,37)" rx="2" ry="2" />
+<text  x="1028.26" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:prepare_request:449 (1 samples, 0.03%)</title><rect x="1017.1" y="309" width="0.4" height="15.0" fill="rgb(248,188,32)" rx="2" ry="2" />
+<text  x="1020.13" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:close:325 (1 samples, 0.03%)</title><rect x="1016.7" y="293" width="0.4" height="15.0" fill="rgb(228,152,19)" rx="2" ry="2" />
+<text  x="1019.72" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/lock.py:acquire:226 (1 samples, 0.03%)</title><rect x="1012.7" y="485" width="0.4" height="15.0" fill="rgb(222,66,10)" rx="2" ry="2" />
+<text  x="1015.65" y="495.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:unquote_unreserved:572 (1 samples, 0.03%)</title><rect x="1022.8" y="261" width="0.4" height="15.0" fill="rgb(240,125,2)" rx="2" ry="2" />
+<text  x="1025.82" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (4 samples, 0.14%)</title><rect x="1170.9" y="309" width="1.6" height="15.0" fill="rgb(208,209,42)" rx="2" ry="2" />
+<text  x="1173.88" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:send:646 (5 samples, 0.17%)</title><rect x="1017.5" y="309" width="2.1" height="15.0" fill="rgb(215,30,53)" rx="2" ry="2" />
+<text  x="1020.54" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:__init__:370 (1 samples, 0.03%)</title><rect x="1022.0" y="341" width="0.4" height="15.0" fill="rgb(214,24,29)" rx="2" ry="2" />
+<text  x="1025.01" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:keyslot:76 (1 samples, 0.03%)</title><rect x="1117.2" y="309" width="0.4" height="15.0" fill="rgb(225,29,54)" rx="2" ry="2" />
+<text  x="1120.19" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/resolver/thread.py:getaddrinfo:65 (2 samples, 0.07%)</title><rect x="1017.9" y="101" width="0.9" height="15.0" fill="rgb(215,167,29)" rx="2" ry="2" />
+<text  x="1020.94" y="111.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/messages/storage/base.py:update:137 (1 samples, 0.03%)</title><rect x="1181.9" y="549" width="0.4" height="15.0" fill="rgb(229,51,37)" rx="2" ry="2" />
+<text  x="1184.86" y="559.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:288 (2 samples, 0.07%)</title><rect x="1133.9" y="325" width="0.8" height="15.0" fill="rgb(207,110,4)" rx="2" ry="2" />
+<text  x="1136.87" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/resolver/thread.py:getaddrinfo:65 (1 samples, 0.03%)</title><rect x="1031.4" y="213" width="0.4" height="15.0" fill="rgb(205,183,38)" rx="2" ry="2" />
+<text  x="1034.37" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:204 (1 samples, 0.03%)</title><rect x="1137.1" y="325" width="0.4" height="15.0" fill="rgb(248,120,8)" rx="2" ry="2" />
+<text  x="1140.12" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:387 (1 samples, 0.03%)</title><rect x="1172.5" y="341" width="0.4" height="15.0" fill="rgb(231,186,22)" rx="2" ry="2" />
+<text  x="1175.51" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:default_headers:810 (1 samples, 0.03%)</title><rect x="1022.0" y="325" width="0.4" height="15.0" fill="rgb(208,4,15)" rx="2" ry="2" />
+<text  x="1025.01" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/parser.py:__next__:30 (1 samples, 0.03%)</title><rect x="1002.5" y="821" width="0.4" height="15.0" fill="rgb(228,130,48)" rx="2" ry="2" />
+<text  x="1005.49" y="831.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:__init__:152 (1 samples, 0.03%)</title><rect x="1016.3" y="277" width="0.4" height="15.0" fill="rgb(227,128,32)" rx="2" ry="2" />
+<text  x="1019.32" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/middleware/common.py:process_request:58 (1 samples, 0.03%)</title><rect x="1010.2" y="629" width="0.4" height="15.0" fill="rgb(254,115,52)" rx="2" ry="2" />
+<text  x="1013.21" y="639.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (408 samples, 14.06%)</title><rect x="1014.3" y="485" width="165.9" height="15.0" fill="rgb(209,16,44)" rx="2" ry="2" />
+<text  x="1017.28" y="495.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:start_new:256 (1 samples, 0.03%)</title><rect x="1171.7" y="181" width="0.4" height="15.0" fill="rgb(206,211,40)" rx="2" ry="2" />
+<text  x="1174.70" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:close:301 (1 samples, 0.03%)</title><rect x="1020.4" y="165" width="0.4" height="15.0" fill="rgb(219,4,53)" rx="2" ry="2" />
+<text  x="1023.38" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:142 (1 samples, 0.03%)</title><rect x="1180.2" y="485" width="0.4" height="15.0" fill="rgb(246,111,22)" rx="2" ry="2" />
+<text  x="1183.24" y="495.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:urlopen:601 (2 samples, 0.07%)</title><rect x="1017.9" y="277" width="0.9" height="15.0" fill="rgb(207,166,52)" rx="2" ry="2" />
+<text  x="1020.94" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (4 samples, 0.14%)</title><rect x="1170.9" y="325" width="1.6" height="15.0" fill="rgb(213,74,18)" rx="2" ry="2" />
+<text  x="1173.88" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:249 (1 samples, 0.03%)</title><rect x="1116.8" y="325" width="0.4" height="15.0" fill="rgb(222,163,32)" rx="2" ry="2" />
+<text  x="1119.78" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/db.py:query:124 (25 samples, 0.86%)</title><rect x="1120.4" y="389" width="10.2" height="15.0" fill="rgb(229,87,19)" rx="2" ry="2" />
+<text  x="1123.44" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/MySQLdb/cursors.py:__init__:76 (1 samples, 0.03%)</title><rect x="1178.2" y="357" width="0.4" height="15.0" fill="rgb(207,55,31)" rx="2" ry="2" />
+<text  x="1181.20" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/unreader.py:chunk:65 (1 samples, 0.03%)</title><rect x="1002.9" y="725" width="0.4" height="15.0" fill="rgb(208,212,51)" rx="2" ry="2" />
+<text  x="1005.89" y="735.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:_send_request:1075 (1 samples, 0.03%)</title><rect x="1024.9" y="245" width="0.4" height="15.0" fill="rgb(240,129,4)" rx="2" ry="2" />
+<text  x="1027.86" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:default_headers:810 (1 samples, 0.03%)</title><rect x="1015.5" y="309" width="0.4" height="15.0" fill="rgb(224,170,5)" rx="2" ry="2" />
+<text  x="1018.50" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:__init__:129 (1 samples, 0.03%)</title><rect x="1016.3" y="309" width="0.4" height="15.0" fill="rgb(245,94,4)" rx="2" ry="2" />
+<text  x="1019.32" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/urls/base.py:set_script_prefix:107 (1 samples, 0.03%)</title><rect x="1006.6" y="773" width="0.4" height="15.0" fill="rgb(248,174,40)" rx="2" ry="2" />
+<text  x="1009.55" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:__exit__:349 (1 samples, 0.03%)</title><rect x="1020.4" y="181" width="0.4" height="15.0" fill="rgb(244,108,26)" rx="2" ry="2" />
+<text  x="1023.38" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_command:610 (4 samples, 0.14%)</title><rect x="1027.3" y="293" width="1.6" height="15.0" fill="rgb(228,218,46)" rx="2" ry="2" />
+<text  x="1030.30" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:start_new:256 (1 samples, 0.03%)</title><rect x="1028.1" y="197" width="0.4" height="15.0" fill="rgb(240,52,36)" rx="2" ry="2" />
+<text  x="1031.11" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:320 (15 samples, 0.52%)</title><rect x="1104.2" y="309" width="6.1" height="15.0" fill="rgb(242,29,31)" rx="2" ry="2" />
+<text  x="1107.17" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:324 (6 samples, 0.21%)</title><rect x="1028.9" y="245" width="2.5" height="15.0" fill="rgb(225,44,45)" rx="2" ry="2" />
+<text  x="1031.92" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:request:519 (3 samples, 0.10%)</title><rect x="1176.6" y="357" width="1.2" height="15.0" fill="rgb(225,106,27)" rx="2" ry="2" />
+<text  x="1179.58" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_packed_command:585 (1 samples, 0.03%)</title><rect x="1031.4" y="277" width="0.4" height="15.0" fill="rgb(216,209,43)" rx="2" ry="2" />
+<text  x="1034.37" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:_retryable_call:58 (1 samples, 0.03%)</title><rect x="1117.6" y="229" width="0.4" height="15.0" fill="rgb(231,54,20)" rx="2" ry="2" />
+<text  x="1120.60" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/MySQLdb/cursors.py:_query:355 (25 samples, 0.86%)</title><rect x="1120.4" y="357" width="10.2" height="15.0" fill="rgb(238,200,30)" rx="2" ry="2" />
+<text  x="1123.44" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:request:533 (7 samples, 0.24%)</title><rect x="1023.6" y="341" width="2.9" height="15.0" fill="rgb(224,140,31)" rx="2" ry="2" />
+<text  x="1026.64" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/_abcoll.py:items:395 (1 samples, 0.03%)</title><rect x="1023.2" y="277" width="0.4" height="15.0" fill="rgb(250,88,16)" rx="2" ry="2" />
+<text  x="1026.23" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/util/connection.py:create_connection:73 (1 samples, 0.03%)</title><rect x="1024.9" y="149" width="0.4" height="15.0" fill="rgb(254,170,26)" rx="2" ry="2" />
+<text  x="1027.86" y="159.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:parse:177 (1 samples, 0.03%)</title><rect x="1004.1" y="773" width="0.4" height="15.0" fill="rgb(250,151,28)" rx="2" ry="2" />
+<text  x="1007.11" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/messages/middleware.py:process_request:12 (3 samples, 0.10%)</title><rect x="1012.7" y="565" width="1.2" height="15.0" fill="rgb(216,156,17)" rx="2" ry="2" />
+<text  x="1015.65" y="575.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:recv:295 (2 samples, 0.07%)</title><rect x="1171.3" y="213" width="0.8" height="15.0" fill="rgb(248,205,28)" rx="2" ry="2" />
+<text  x="1174.29" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:325 (1 samples, 0.03%)</title><rect x="1031.0" y="229" width="0.4" height="15.0" fill="rgb(247,130,49)" rx="2" ry="2" />
+<text  x="1033.96" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:execute_command:667 (1 samples, 0.03%)</title><rect x="1136.3" y="309" width="0.4" height="15.0" fill="rgb(248,102,9)" rx="2" ry="2" />
+<text  x="1139.31" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (1 samples, 0.03%)</title><rect x="1117.6" y="325" width="0.4" height="15.0" fill="rgb(214,214,47)" rx="2" ry="2" />
+<text  x="1120.60" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connection.py:connect:166 (1 samples, 0.03%)</title><rect x="1024.9" y="181" width="0.4" height="15.0" fill="rgb(205,61,43)" rx="2" ry="2" />
+<text  x="1027.86" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/handlers.py:emit:76 (2 samples, 0.07%)</title><rect x="1179.0" y="341" width="0.8" height="15.0" fill="rgb(226,7,31)" rx="2" ry="2" />
+<text  x="1182.02" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:prepare_request:440 (1 samples, 0.03%)</title><rect x="1176.6" y="341" width="0.4" height="15.0" fill="rgb(244,94,40)" rx="2" ry="2" />
+<text  x="1179.58" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:get:39 (8 samples, 0.28%)</title><rect x="1133.1" y="405" width="3.2" height="15.0" fill="rgb(226,19,21)" rx="2" ry="2" />
+<text  x="1136.05" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:send:412 (1 samples, 0.03%)</title><rect x="1017.5" y="293" width="0.4" height="15.0" fill="rgb(246,149,12)" rx="2" ry="2" />
+<text  x="1020.54" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (1 samples, 0.03%)</title><rect x="1135.9" y="325" width="0.4" height="15.0" fill="rgb(218,112,42)" rx="2" ry="2" />
+<text  x="1138.90" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:284 (2 samples, 0.07%)</title><rect x="1028.9" y="229" width="0.8" height="15.0" fill="rgb(229,75,0)" rx="2" ry="2" />
+<text  x="1031.92" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:hgetall:67 (223 samples, 7.69%)</title><rect x="1026.5" y="389" width="90.7" height="15.0" fill="rgb(243,163,54)" rx="2" ry="2" />
+<text  x="1029.48" y="399.5" >/usr/local..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:289 (2 samples, 0.07%)</title><rect x="1162.7" y="309" width="0.9" height="15.0" fill="rgb(234,87,49)" rx="2" ry="2" />
+<text  x="1165.75" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/connection.py:get_node_by_slot:358 (1 samples, 0.03%)</title><rect x="1020.0" y="309" width="0.4" height="15.0" fill="rgb(225,137,24)" rx="2" ry="2" />
+<text  x="1022.98" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:287 (16 samples, 0.55%)</title><rect x="1152.6" y="309" width="6.5" height="15.0" fill="rgb(222,104,10)" rx="2" ry="2" />
+<text  x="1155.58" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:prepare_request:462 (2 samples, 0.07%)</title><rect x="1022.8" y="325" width="0.8" height="15.0" fill="rgb(236,37,16)" rx="2" ry="2" />
+<text  x="1025.82" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:hget:1963 (1 samples, 0.03%)</title><rect x="1020.8" y="357" width="0.4" height="15.0" fill="rgb(247,189,35)" rx="2" ry="2" />
+<text  x="1023.79" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:pack_command:650 (1 samples, 0.03%)</title><rect x="1172.9" y="293" width="0.4" height="15.0" fill="rgb(232,176,17)" rx="2" ry="2" />
+<text  x="1175.92" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:__init__:52 (7 samples, 0.24%)</title><rect x="1002.9" y="789" width="2.8" height="15.0" fill="rgb(217,9,38)" rx="2" ry="2" />
+<text  x="1005.89" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__module_lock:58 (1 samples, 0.03%)</title><rect x="1178.2" y="325" width="0.4" height="15.0" fill="rgb(245,218,27)" rx="2" ry="2" />
+<text  x="1181.20" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:connect:484 (3 samples, 0.10%)</title><rect x="1027.3" y="261" width="1.2" height="15.0" fill="rgb(228,83,35)" rx="2" ry="2" />
+<text  x="1030.30" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:get_script_name:196 (1 samples, 0.03%)</title><rect x="1008.6" y="757" width="0.4" height="15.0" fill="rgb(205,107,15)" rx="2" ry="2" />
+<text  x="1011.59" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/request.py:get_full_path:127 (2 samples, 0.07%)</title><rect x="1011.4" y="613" width="0.8" height="15.0" fill="rgb(233,128,7)" rx="2" ry="2" />
+<text  x="1014.43" y="623.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django_prometheus/middleware.py:process_response:155 (1 samples, 0.03%)</title><rect x="1180.2" y="469" width="0.4" height="15.0" fill="rgb(229,103,13)" rx="2" ry="2" />
+<text  x="1183.24" y="479.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:send:533 (1 samples, 0.03%)</title><rect x="1019.2" y="293" width="0.4" height="15.0" fill="rgb(222,78,28)" rx="2" ry="2" />
+<text  x="1022.16" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:_make_request:357 (1 samples, 0.03%)</title><rect x="1177.8" y="293" width="0.4" height="15.0" fill="rgb(213,116,43)" rx="2" ry="2" />
+<text  x="1180.80" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:324 (3 samples, 0.10%)</title><rect x="1029.7" y="229" width="1.3" height="15.0" fill="rgb(234,81,17)" rx="2" ry="2" />
+<text  x="1032.74" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connection.py:_new_conn:141 (1 samples, 0.03%)</title><rect x="1024.9" y="165" width="0.4" height="15.0" fill="rgb(231,208,24)" rx="2" ry="2" />
+<text  x="1027.86" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/random.py:choice:274 (1 samples, 0.03%)</title><rect x="1174.1" y="293" width="0.4" height="15.0" fill="rgb(212,91,21)" rx="2" ry="2" />
+<text  x="1177.14" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:format:466 (1 samples, 0.03%)</title><rect x="1179.0" y="293" width="0.4" height="15.0" fill="rgb(237,155,8)" rx="2" ry="2" />
+<text  x="1182.02" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connection.py:connect:166 (1 samples, 0.03%)</title><rect x="1177.8" y="197" width="0.4" height="15.0" fill="rgb(208,15,34)" rx="2" ry="2" />
+<text  x="1180.80" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/db/__init__.py:reset_queries:53 (2 samples, 0.07%)</title><rect x="1007.4" y="757" width="0.8" height="15.0" fill="rgb(254,229,44)" rx="2" ry="2" />
+<text  x="1010.37" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:prepare_request:449 (1 samples, 0.03%)</title><rect x="1177.0" y="341" width="0.4" height="15.0" fill="rgb(226,208,53)" rx="2" ry="2" />
+<text  x="1179.98" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:208 (1 samples, 0.03%)</title><rect x="1149.7" y="325" width="0.4" height="15.0" fill="rgb(214,37,1)" rx="2" ry="2" />
+<text  x="1152.73" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/threading.py:acquire:173 (1 samples, 0.03%)</title><rect x="1183.9" y="677" width="0.4" height="15.0" fill="rgb(217,52,47)" rx="2" ry="2" />
+<text  x="1186.90" y="687.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:357 (1 samples, 0.03%)</title><rect x="1020.8" y="325" width="0.4" height="15.0" fill="rgb(214,9,50)" rx="2" ry="2" />
+<text  x="1023.79" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:hgetall:1967 (1 samples, 0.03%)</title><rect x="1015.1" y="373" width="0.4" height="15.0" fill="rgb(239,11,34)" rx="2" ry="2" />
+<text  x="1018.09" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:request:533 (6 samples, 0.21%)</title><rect x="1017.5" y="325" width="2.5" height="15.0" fill="rgb(230,41,32)" rx="2" ry="2" />
+<text  x="1020.54" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (425 samples, 14.65%)</title><rect x="1009.4" y="741" width="172.9" height="15.0" fill="rgb(240,15,11)" rx="2" ry="2" />
+<text  x="1012.40" y="751.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:sendall:354 (2 samples, 0.07%)</title><rect x="1173.3" y="277" width="0.8" height="15.0" fill="rgb(250,53,12)" rx="2" ry="2" />
+<text  x="1176.32" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:try_lock_user_bet:207 (1 samples, 0.03%)</title><rect x="1021.6" y="389" width="0.4" height="15.0" fill="rgb(214,133,35)" rx="2" ry="2" />
+<text  x="1024.60" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:206 (64 samples, 2.21%)</title><rect x="1035.8" y="325" width="26.1" height="15.0" fill="rgb(215,142,51)" rx="2" ry="2" />
+<text  x="1038.84" y="335.5" >/..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:encode:118 (1 samples, 0.03%)</title><rect x="1172.9" y="277" width="0.4" height="15.0" fill="rgb(217,148,24)" rx="2" ry="2" />
+<text  x="1175.92" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:318 (1 samples, 0.03%)</title><rect x="1167.2" y="309" width="0.4" height="15.0" fill="rgb(235,139,23)" rx="2" ry="2" />
+<text  x="1170.22" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/_collections.py:from_httplib:319 (1 samples, 0.03%)</title><rect x="1018.8" y="245" width="0.4" height="15.0" fill="rgb(224,201,18)" rx="2" ry="2" />
+<text  x="1021.76" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/urlparse.py:urlsplit:192 (1 samples, 0.03%)</title><rect x="1019.2" y="213" width="0.4" height="15.0" fill="rgb(249,150,37)" rx="2" ry="2" />
+<text  x="1022.16" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/tools.py:get_user_coins:68 (5 samples, 0.17%)</title><rect x="1176.2" y="405" width="2.0" height="15.0" fill="rgb(223,21,35)" rx="2" ry="2" />
+<text  x="1179.17" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/view.py:run_info:58 (2 samples, 0.07%)</title><rect x="1175.4" y="421" width="0.8" height="15.0" fill="rgb(205,54,44)" rx="2" ry="2" />
+<text  x="1178.36" y="431.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:290 (3 samples, 0.10%)</title><rect x="1087.9" y="309" width="1.2" height="15.0" fill="rgb(206,51,47)" rx="2" ry="2" />
+<text  x="1090.90" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:get_run_info_or_result:193 (6 samples, 0.21%)</title><rect x="1172.9" y="405" width="2.5" height="15.0" fill="rgb(206,108,45)" rx="2" ry="2" />
+<text  x="1175.92" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:357 (1 samples, 0.03%)</title><rect x="1015.1" y="341" width="0.4" height="15.0" fill="rgb(221,66,53)" rx="2" ry="2" />
+<text  x="1018.09" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (423 samples, 14.58%)</title><rect x="1010.2" y="661" width="172.1" height="15.0" fill="rgb(205,155,54)" rx="2" ry="2" />
+<text  x="1013.21" y="671.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:requote_uri:603 (1 samples, 0.03%)</title><rect x="1022.8" y="277" width="0.4" height="15.0" fill="rgb(245,187,45)" rx="2" ry="2" />
+<text  x="1025.82" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:211 (6 samples, 0.21%)</title><rect x="1092.8" y="325" width="2.4" height="15.0" fill="rgb(228,223,54)" rx="2" ry="2" />
+<text  x="1095.79" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:disconnect:572 (1 samples, 0.03%)</title><rect x="1116.8" y="293" width="0.4" height="15.0" fill="rgb(220,176,30)" rx="2" ry="2" />
+<text  x="1119.78" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/urlparse.py:urlunsplit:262 (1 samples, 0.03%)</title><rect x="1177.4" y="277" width="0.4" height="15.0" fill="rgb(249,42,34)" rx="2" ry="2" />
+<text  x="1180.39" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:try_bet:301 (2 samples, 0.07%)</title><rect x="1117.2" y="405" width="0.8" height="15.0" fill="rgb(220,210,13)" rx="2" ry="2" />
+<text  x="1120.19" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/encoding.py:escape_uri_path:231 (2 samples, 0.07%)</title><rect x="1011.4" y="597" width="0.8" height="15.0" fill="rgb(235,132,52)" rx="2" ry="2" />
+<text  x="1014.43" y="607.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:recv:70 (1 samples, 0.03%)</title><rect x="1117.6" y="245" width="0.4" height="15.0" fill="rgb(246,135,4)" rx="2" ry="2" />
+<text  x="1120.60" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:default_headers:806 (1 samples, 0.03%)</title><rect x="1176.2" y="341" width="0.4" height="15.0" fill="rgb(250,196,48)" rx="2" ry="2" />
+<text  x="1179.17" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:326 (1 samples, 0.03%)</title><rect x="1030.6" y="213" width="0.4" height="15.0" fill="rgb(234,145,26)" rx="2" ry="2" />
+<text  x="1033.55" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:format:724 (1 samples, 0.03%)</title><rect x="1179.0" y="309" width="0.4" height="15.0" fill="rgb(252,204,30)" rx="2" ry="2" />
+<text  x="1182.02" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:__init__:55 (2 samples, 0.07%)</title><rect x="1183.5" y="741" width="0.8" height="15.0" fill="rgb(244,196,52)" rx="2" ry="2" />
+<text  x="1186.49" y="751.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:execute_command:667 (4 samples, 0.14%)</title><rect x="1027.3" y="309" width="1.6" height="15.0" fill="rgb(216,198,25)" rx="2" ry="2" />
+<text  x="1030.30" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:send:843 (1 samples, 0.03%)</title><rect x="1024.9" y="197" width="0.4" height="15.0" fill="rgb(214,219,49)" rx="2" ry="2" />
+<text  x="1027.86" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:387 (1 samples, 0.03%)</title><rect x="1021.2" y="309" width="0.4" height="15.0" fill="rgb(215,137,15)" rx="2" ry="2" />
+<text  x="1024.20" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/module_loading.py:import_string:20 (3 samples, 0.10%)</title><rect x="1012.7" y="533" width="1.2" height="15.0" fill="rgb(239,135,51)" rx="2" ry="2" />
+<text  x="1015.65" y="543.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (425 samples, 14.65%)</title><rect x="1009.4" y="725" width="172.9" height="15.0" fill="rgb(235,82,16)" rx="2" ry="2" />
+<text  x="1012.40" y="735.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:hget:64 (1 samples, 0.03%)</title><rect x="1020.8" y="373" width="0.4" height="15.0" fill="rgb(244,130,26)" rx="2" ry="2" />
+<text  x="1023.79" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:request:533 (1 samples, 0.03%)</title><rect x="1177.8" y="357" width="0.4" height="15.0" fill="rgb(237,96,53)" rx="2" ry="2" />
+<text  x="1180.80" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_tblib.py:g:371 (2 samples, 0.07%)</title><rect x="1188.4" y="821" width="0.8" height="15.0" fill="rgb(220,29,42)" rx="2" ry="2" />
+<text  x="1191.37" y="831.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:210 (1 samples, 0.03%)</title><rect x="1165.6" y="325" width="0.4" height="15.0" fill="rgb(242,76,28)" rx="2" ry="2" />
+<text  x="1168.59" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:request:519 (1 samples, 0.03%)</title><rect x="1017.1" y="325" width="0.4" height="15.0" fill="rgb(219,127,22)" rx="2" ry="2" />
+<text  x="1020.13" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:__init__:417 (1 samples, 0.03%)</title><rect x="1015.9" y="325" width="0.4" height="15.0" fill="rgb(254,31,51)" rx="2" ry="2" />
+<text  x="1018.91" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/async.py:handle_request:122 (1 samples, 0.03%)</title><rect x="1183.1" y="805" width="0.4" height="15.0" fill="rgb(220,43,26)" rx="2" ry="2" />
+<text  x="1186.09" y="815.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:222 (3 samples, 0.10%)</title><rect x="1134.7" y="341" width="1.2" height="15.0" fill="rgb(247,218,23)" rx="2" ry="2" />
+<text  x="1137.68" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:318 (2 samples, 0.07%)</title><rect x="1135.1" y="325" width="0.8" height="15.0" fill="rgb(244,179,0)" rx="2" ry="2" />
+<text  x="1138.09" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/response.py:from_httplib:456 (1 samples, 0.03%)</title><rect x="1018.8" y="261" width="0.4" height="15.0" fill="rgb(235,40,6)" rx="2" ry="2" />
+<text  x="1021.76" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/async.py:handle_request:96 (6 samples, 0.21%)</title><rect x="1183.5" y="805" width="2.4" height="15.0" fill="rgb(241,52,15)" rx="2" ry="2" />
+<text  x="1186.49" y="815.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:323 (7 samples, 0.24%)</title><rect x="1133.1" y="357" width="2.8" height="15.0" fill="rgb(219,115,47)" rx="2" ry="2" />
+<text  x="1136.05" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:_new_pool:195 (1 samples, 0.03%)</title><rect x="1024.0" y="213" width="0.5" height="15.0" fill="rgb(225,215,20)" rx="2" ry="2" />
+<text  x="1027.04" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:init_poolmanager:164 (1 samples, 0.03%)</title><rect x="1015.9" y="293" width="0.4" height="15.0" fill="rgb(241,140,6)" rx="2" ry="2" />
+<text  x="1018.91" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (425 samples, 14.65%)</title><rect x="1009.4" y="693" width="172.9" height="15.0" fill="rgb(252,222,3)" rx="2" ry="2" />
+<text  x="1012.40" y="703.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:get_run_info:144 (3 samples, 0.10%)</title><rect x="1174.1" y="389" width="1.3" height="15.0" fill="rgb(243,60,33)" rx="2" ry="2" />
+<text  x="1177.14" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:user_has_enough_coins:234 (1 samples, 0.03%)</title><rect x="1020.8" y="389" width="0.4" height="15.0" fill="rgb(243,64,30)" rx="2" ry="2" />
+<text  x="1023.79" y="399.5" ></text>
+</g>
+<g >
+<title>(idle) (2,440 samples, 84.11%)</title><rect x="10.0" y="853" width="992.5" height="15.0" fill="rgb(228,224,30)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" >(idle)</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:spawn:223 (1 samples, 0.03%)</title><rect x="1136.7" y="181" width="0.4" height="15.0" fill="rgb(218,63,0)" rx="2" ry="2" />
+<text  x="1139.71" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:_worker:270 (1 samples, 0.03%)</title><rect x="1189.2" y="853" width="0.4" height="15.0" fill="rgb(237,199,26)" rx="2" ry="2" />
+<text  x="1192.19" y="863.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/view.py:bet:105 (253 samples, 8.72%)</title><rect x="1015.1" y="421" width="102.9" height="15.0" fill="rgb(246,90,21)" rx="2" ry="2" />
+<text  x="1018.09" y="431.5" >/usr/local/v..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:203 (2 samples, 0.07%)</title><rect x="1031.8" y="325" width="0.8" height="15.0" fill="rgb(206,200,20)" rx="2" ry="2" />
+<text  x="1034.77" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:urlopen:601 (2 samples, 0.07%)</title><rect x="1024.5" y="293" width="0.8" height="15.0" fill="rgb(213,160,14)" rx="2" ry="2" />
+<text  x="1027.45" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:recv:295 (1 samples, 0.03%)</title><rect x="1020.4" y="197" width="0.4" height="15.0" fill="rgb(231,34,42)" rx="2" ry="2" />
+<text  x="1023.38" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:_send_request:1075 (2 samples, 0.07%)</title><rect x="1017.9" y="229" width="0.9" height="15.0" fill="rgb(249,152,22)" rx="2" ry="2" />
+<text  x="1020.94" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/encoding.py:force_bytes:127 (1 samples, 0.03%)</title><rect x="1011.4" y="581" width="0.4" height="15.0" fill="rgb(243,93,51)" rx="2" ry="2" />
+<text  x="1014.43" y="591.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:prepare_url:438 (1 samples, 0.03%)</title><rect x="1177.4" y="309" width="0.4" height="15.0" fill="rgb(210,114,40)" rx="2" ry="2" />
+<text  x="1180.39" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:_retryable_call:58 (1 samples, 0.03%)</title><rect x="1020.4" y="213" width="0.4" height="15.0" fill="rgb(221,191,8)" rx="2" ry="2" />
+<text  x="1023.38" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:178 (2 samples, 0.07%)</title><rect x="1136.3" y="325" width="0.8" height="15.0" fill="rgb(211,117,41)" rx="2" ry="2" />
+<text  x="1139.31" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/util/connection.py:create_connection:60 (1 samples, 0.03%)</title><rect x="1177.8" y="165" width="0.4" height="15.0" fill="rgb(209,27,46)" rx="2" ry="2" />
+<text  x="1180.80" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:__call__:156 (3 samples, 0.10%)</title><rect x="1008.2" y="789" width="1.2" height="15.0" fill="rgb(234,196,11)" rx="2" ry="2" />
+<text  x="1011.18" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:_determine_slot:276 (1 samples, 0.03%)</title><rect x="1117.2" y="325" width="0.4" height="15.0" fill="rgb(226,54,42)" rx="2" ry="2" />
+<text  x="1120.19" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/urls/base.py:set_script_prefix:109 (1 samples, 0.03%)</title><rect x="1007.0" y="773" width="0.4" height="15.0" fill="rgb(254,40,35)" rx="2" ry="2" />
+<text  x="1009.96" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:delete:743 (2 samples, 0.07%)</title><rect x="1117.2" y="373" width="0.8" height="15.0" fill="rgb(208,86,54)" rx="2" ry="2" />
+<text  x="1120.19" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:__init__:152 (8 samples, 0.28%)</title><rect x="1002.9" y="805" width="3.2" height="15.0" fill="rgb(253,87,5)" rx="2" ry="2" />
+<text  x="1005.89" y="815.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:get:75 (5 samples, 0.17%)</title><rect x="1176.2" y="389" width="2.0" height="15.0" fill="rgb(241,7,17)" rx="2" ry="2" />
+<text  x="1179.17" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/request.py:split_domain_port:550 (1 samples, 0.03%)</title><rect x="1010.2" y="597" width="0.4" height="15.0" fill="rgb(223,196,19)" rx="2" ry="2" />
+<text  x="1013.21" y="607.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:get_netrc_auth:178 (1 samples, 0.03%)</title><rect x="1017.1" y="293" width="0.4" height="15.0" fill="rgb(219,77,27)" rx="2" ry="2" />
+<text  x="1020.13" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:177 (1 samples, 0.03%)</title><rect x="1026.5" y="325" width="0.4" height="15.0" fill="rgb(251,14,7)" rx="2" ry="2" />
+<text  x="1029.48" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:210 (5 samples, 0.17%)</title><rect x="1090.8" y="325" width="2.0" height="15.0" fill="rgb(232,94,4)" rx="2" ry="2" />
+<text  x="1093.75" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (418 samples, 14.41%)</title><rect x="1012.2" y="645" width="170.1" height="15.0" fill="rgb(208,121,51)" rx="2" ry="2" />
+<text  x="1015.25" y="655.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:_send_output:881 (1 samples, 0.03%)</title><rect x="1024.9" y="213" width="0.4" height="15.0" fill="rgb(240,175,14)" rx="2" ry="2" />
+<text  x="1027.86" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__import__:91 (1 samples, 0.03%)</title><rect x="1178.2" y="341" width="0.4" height="15.0" fill="rgb(215,5,37)" rx="2" ry="2" />
+<text  x="1181.20" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_read_from_socket:174 (1 samples, 0.03%)</title><rect x="1117.6" y="261" width="0.4" height="15.0" fill="rgb(250,124,15)" rx="2" ry="2" />
+<text  x="1120.60" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:&lt;setcomp&gt;:318 (2 samples, 0.07%)</title><rect x="1103.4" y="293" width="0.8" height="15.0" fill="rgb(219,67,29)" rx="2" ry="2" />
+<text  x="1106.36" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/response.py:_convert_to_charset:124 (1 samples, 0.03%)</title><rect x="1181.1" y="501" width="0.4" height="15.0" fill="rgb(214,220,7)" rx="2" ry="2" />
+<text  x="1184.05" y="511.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:user_has_enough_coins:239 (1 samples, 0.03%)</title><rect x="1021.2" y="389" width="0.4" height="15.0" fill="rgb(251,95,51)" rx="2" ry="2" />
+<text  x="1024.20" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:_send_request:1075 (1 samples, 0.03%)</title><rect x="1177.8" y="261" width="0.4" height="15.0" fill="rgb(250,203,45)" rx="2" ry="2" />
+<text  x="1180.80" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:hget:64 (3 samples, 0.10%)</title><rect x="1174.1" y="373" width="1.3" height="15.0" fill="rgb(248,67,54)" rx="2" ry="2" />
+<text  x="1177.14" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/resolver/thread.py:getaddrinfo:65 (1 samples, 0.03%)</title><rect x="1136.7" y="213" width="0.4" height="15.0" fill="rgb(249,131,14)" rx="2" ry="2" />
+<text  x="1139.71" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:request:1041 (2 samples, 0.07%)</title><rect x="1024.5" y="261" width="0.8" height="15.0" fill="rgb(214,83,31)" rx="2" ry="2" />
+<text  x="1027.45" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:recv:70 (1 samples, 0.03%)</title><rect x="1020.4" y="229" width="0.4" height="15.0" fill="rgb(244,98,32)" rx="2" ry="2" />
+<text  x="1023.38" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:try_bet:263 (1 samples, 0.03%)</title><rect x="1015.1" y="405" width="0.4" height="15.0" fill="rgb(231,73,31)" rx="2" ry="2" />
+<text  x="1018.09" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:send:843 (2 samples, 0.07%)</title><rect x="1017.9" y="181" width="0.9" height="15.0" fill="rgb(242,61,24)" rx="2" ry="2" />
+<text  x="1020.94" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:recv:70 (1 samples, 0.03%)</title><rect x="1020.8" y="229" width="0.4" height="15.0" fill="rgb(222,155,15)" rx="2" ry="2" />
+<text  x="1023.79" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (223 samples, 7.69%)</title><rect x="1026.5" y="357" width="90.7" height="15.0" fill="rgb(211,129,36)" rx="2" ry="2" />
+<text  x="1029.48" y="367.5" >/usr/lib/p..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:prepare:314 (1 samples, 0.03%)</title><rect x="1023.2" y="309" width="0.4" height="15.0" fill="rgb(218,160,37)" rx="2" ry="2" />
+<text  x="1026.23" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (410 samples, 14.13%)</title><rect x="1013.9" y="549" width="166.7" height="15.0" fill="rgb(225,55,18)" rx="2" ry="2" />
+<text  x="1016.87" y="559.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:write:341 (1 samples, 0.03%)</title><rect x="1182.3" y="789" width="0.4" height="15.0" fill="rgb(208,170,8)" rx="2" ry="2" />
+<text  x="1185.27" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__import__:98 (1 samples, 0.03%)</title><rect x="1013.5" y="501" width="0.4" height="15.0" fill="rgb(214,213,4)" rx="2" ry="2" />
+<text  x="1016.47" y="511.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:205 (7 samples, 0.24%)</title><rect x="1033.0" y="325" width="2.8" height="15.0" fill="rgb(232,190,1)" rx="2" ry="2" />
+<text  x="1035.99" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/pool.py:apply:159 (1 samples, 0.03%)</title><rect x="1031.4" y="197" width="0.4" height="15.0" fill="rgb(240,61,34)" rx="2" ry="2" />
+<text  x="1034.37" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:getLogger:1023 (2 samples, 0.07%)</title><rect x="1183.5" y="709" width="0.8" height="15.0" fill="rgb(227,78,2)" rx="2" ry="2" />
+<text  x="1186.49" y="719.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:parse_headers:76 (1 samples, 0.03%)</title><rect x="1005.3" y="757" width="0.4" height="15.0" fill="rgb(237,160,42)" rx="2" ry="2" />
+<text  x="1008.33" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:putrequest:921 (1 samples, 0.03%)</title><rect x="1024.5" y="229" width="0.4" height="15.0" fill="rgb(223,77,10)" rx="2" ry="2" />
+<text  x="1027.45" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/body.py:read:212 (1 samples, 0.03%)</title><rect x="1014.7" y="341" width="0.4" height="15.0" fill="rgb(221,143,37)" rx="2" ry="2" />
+<text  x="1017.69" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (2 samples, 0.07%)</title><rect x="1174.5" y="309" width="0.9" height="15.0" fill="rgb(233,0,48)" rx="2" ry="2" />
+<text  x="1177.54" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (8 samples, 0.28%)</title><rect x="1133.1" y="373" width="3.2" height="15.0" fill="rgb(238,121,33)" rx="2" ry="2" />
+<text  x="1136.05" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/tools.py:wrapper:40 (402 samples, 13.86%)</title><rect x="1015.1" y="437" width="163.5" height="15.0" fill="rgb(224,62,46)" rx="2" ry="2" />
+<text  x="1018.09" y="447.5" >/usr/local/vntop/serv..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_command:610 (3 samples, 0.10%)</title><rect x="1172.9" y="309" width="1.2" height="15.0" fill="rgb(241,109,39)" rx="2" ry="2" />
+<text  x="1175.92" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/view.py:user_info:31 (5 samples, 0.17%)</title><rect x="1176.2" y="421" width="2.0" height="15.0" fill="rgb(224,27,41)" rx="2" ry="2" />
+<text  x="1179.17" y="431.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connection.py:_new_conn:141 (2 samples, 0.07%)</title><rect x="1017.9" y="149" width="0.9" height="15.0" fill="rgb(249,97,51)" rx="2" ry="2" />
+<text  x="1020.94" y="159.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:set:408 (1 samples, 0.03%)</title><rect x="1189.2" y="837" width="0.4" height="15.0" fill="rgb(215,96,10)" rx="2" ry="2" />
+<text  x="1192.19" y="847.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/connection.py:get_node_by_slot:358 (1 samples, 0.03%)</title><rect x="1174.1" y="309" width="0.4" height="15.0" fill="rgb(221,148,54)" rx="2" ry="2" />
+<text  x="1177.14" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:295 (1 samples, 0.03%)</title><rect x="1165.2" y="309" width="0.4" height="15.0" fill="rgb(229,171,24)" rx="2" ry="2" />
+<text  x="1168.19" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/db/utils.py:__iter__:223 (2 samples, 0.07%)</title><rect x="1007.4" y="725" width="0.8" height="15.0" fill="rgb(222,132,36)" rx="2" ry="2" />
+<text  x="1010.37" y="735.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:parse_headers:63 (1 samples, 0.03%)</title><rect x="1004.5" y="757" width="0.4" height="15.0" fill="rgb(251,57,45)" rx="2" ry="2" />
+<text  x="1007.52" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:285 (1 samples, 0.03%)</title><rect x="1015.1" y="293" width="0.4" height="15.0" fill="rgb(208,110,42)" rx="2" ry="2" />
+<text  x="1018.09" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:request:60 (8 samples, 0.28%)</title><rect x="1016.7" y="341" width="3.3" height="15.0" fill="rgb(232,11,22)" rx="2" ry="2" />
+<text  x="1019.72" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:is_forbidden_uid:29 (25 samples, 0.86%)</title><rect x="1120.4" y="405" width="10.2" height="15.0" fill="rgb(246,85,19)" rx="2" ry="2" />
+<text  x="1123.44" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:357 (2 samples, 0.07%)</title><rect x="1174.5" y="325" width="0.9" height="15.0" fill="rgb(240,22,6)" rx="2" ry="2" />
+<text  x="1177.54" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:284 (1 samples, 0.03%)</title><rect x="1174.5" y="277" width="0.5" height="15.0" fill="rgb(244,78,3)" rx="2" ry="2" />
+<text  x="1177.54" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:__call__:155 (2 samples, 0.07%)</title><rect x="1007.4" y="789" width="0.8" height="15.0" fill="rgb(242,197,33)" rx="2" ry="2" />
+<text  x="1010.37" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:314 (3 samples, 0.10%)</title><rect x="1166.0" y="309" width="1.2" height="15.0" fill="rgb(214,89,13)" rx="2" ry="2" />
+<text  x="1169.00" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:209 (38 samples, 1.31%)</title><rect x="1150.1" y="325" width="15.5" height="15.0" fill="rgb(244,81,53)" rx="2" ry="2" />
+<text  x="1153.14" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_connect:529 (1 samples, 0.03%)</title><rect x="1028.1" y="245" width="0.4" height="15.0" fill="rgb(210,118,20)" rx="2" ry="2" />
+<text  x="1031.11" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:178 (12 samples, 0.41%)</title><rect x="1026.9" y="325" width="4.9" height="15.0" fill="rgb(221,199,20)" rx="2" ry="2" />
+<text  x="1029.89" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/async.py:handle_request:107 (432 samples, 14.89%)</title><rect x="1006.6" y="805" width="175.7" height="15.0" fill="rgb(224,156,52)" rx="2" ry="2" />
+<text  x="1009.55" y="815.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:_start_new_or_dummy:275 (1 samples, 0.03%)</title><rect x="1171.7" y="197" width="0.4" height="15.0" fill="rgb(234,164,47)" rx="2" ry="2" />
+<text  x="1174.70" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (2 samples, 0.07%)</title><rect x="1020.0" y="341" width="0.8" height="15.0" fill="rgb(235,77,4)" rx="2" ry="2" />
+<text  x="1022.98" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/importlib/__init__.py:import_module:37 (3 samples, 0.10%)</title><rect x="1012.7" y="517" width="1.2" height="15.0" fill="rgb(206,106,36)" rx="2" ry="2" />
+<text  x="1015.65" y="527.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:spawn:224 (1 samples, 0.03%)</title><rect x="1018.3" y="69" width="0.5" height="15.0" fill="rgb(221,153,23)" rx="2" ry="2" />
+<text  x="1021.35" y="79.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:spawn:222 (1 samples, 0.03%)</title><rect x="1031.4" y="181" width="0.4" height="15.0" fill="rgb(253,88,3)" rx="2" ry="2" />
+<text  x="1034.37" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/Queue.py:__init__:36 (1 samples, 0.03%)</title><rect x="1017.5" y="165" width="0.4" height="15.0" fill="rgb(228,174,4)" rx="2" ry="2" />
+<text  x="1020.54" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/async.py:handle:49 (9 samples, 0.31%)</title><rect x="1002.5" y="837" width="3.6" height="15.0" fill="rgb(241,94,17)" rx="2" ry="2" />
+<text  x="1005.49" y="847.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:emit:939 (1 samples, 0.03%)</title><rect x="1179.8" y="325" width="0.4" height="15.0" fill="rgb(222,172,41)" rx="2" ry="2" />
+<text  x="1182.83" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/pool.py:apply:159 (2 samples, 0.07%)</title><rect x="1027.3" y="197" width="0.8" height="15.0" fill="rgb(242,201,53)" rx="2" ry="2" />
+<text  x="1030.30" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/urlparse.py:urlparse:142 (1 samples, 0.03%)</title><rect x="1019.2" y="229" width="0.4" height="15.0" fill="rgb(207,131,51)" rx="2" ry="2" />
+<text  x="1022.16" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:hget:1963 (2 samples, 0.07%)</title><rect x="1020.0" y="357" width="0.8" height="15.0" fill="rgb(214,150,18)" rx="2" ry="2" />
+<text  x="1022.98" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:content:828 (1 samples, 0.03%)</title><rect x="1026.1" y="309" width="0.4" height="15.0" fill="rgb(216,181,27)" rx="2" ry="2" />
+<text  x="1029.08" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:_read_limited:41 (1 samples, 0.03%)</title><rect x="1014.7" y="357" width="0.4" height="15.0" fill="rgb(221,214,26)" rx="2" ry="2" />
+<text  x="1017.69" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/baseserver.py:_handle_and_close_when_done:26 (451 samples, 15.55%)</title><rect x="1002.5" y="853" width="183.4" height="15.0" fill="rgb(233,92,32)" rx="2" ry="2" />
+<text  x="1005.49" y="863.5" >/usr/lib64/python2.7/si..</text>
+</g>
+<g >
+<title>&lt;string&gt;:getsockopt:1 (2 samples, 0.07%)</title><rect x="1173.3" y="245" width="0.8" height="15.0" fill="rgb(210,25,38)" rx="2" ry="2" />
+<text  x="1176.32" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:__init__:71 (1 samples, 0.03%)</title><rect x="1024.0" y="181" width="0.5" height="15.0" fill="rgb(227,134,30)" rx="2" ry="2" />
+<text  x="1027.04" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:send:533 (1 samples, 0.03%)</title><rect x="1025.7" y="309" width="0.4" height="15.0" fill="rgb(246,188,26)" rx="2" ry="2" />
+<text  x="1028.67" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:_on_async:389 (2 samples, 0.07%)</title><rect x="1188.4" y="837" width="0.8" height="15.0" fill="rgb(220,79,27)" rx="2" ry="2" />
+<text  x="1191.37" y="847.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:init_poolmanager:164 (1 samples, 0.03%)</title><rect x="1016.3" y="293" width="0.4" height="15.0" fill="rgb(216,41,15)" rx="2" ry="2" />
+<text  x="1019.32" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:is_forbidden_uid:31 (1 samples, 0.03%)</title><rect x="1130.6" y="405" width="0.4" height="15.0" fill="rgb(236,190,46)" rx="2" ry="2" />
+<text  x="1133.61" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:_start_new_or_dummy:275 (1 samples, 0.03%)</title><rect x="1028.1" y="213" width="0.4" height="15.0" fill="rgb(207,224,46)" rx="2" ry="2" />
+<text  x="1031.11" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_context:240 (1 samples, 0.03%)</title><rect x="1024.0" y="245" width="0.5" height="15.0" fill="rgb(245,199,52)" rx="2" ry="2" />
+<text  x="1027.04" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socketcommon.py:getaddrinfo:196 (1 samples, 0.03%)</title><rect x="1031.4" y="229" width="0.4" height="15.0" fill="rgb(218,70,20)" rx="2" ry="2" />
+<text  x="1034.37" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/util/url.py:parse_url:222 (1 samples, 0.03%)</title><rect x="1023.6" y="261" width="0.4" height="15.0" fill="rgb(252,26,7)" rx="2" ry="2" />
+<text  x="1026.64" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_pool_key:261 (1 samples, 0.03%)</title><rect x="1024.0" y="229" width="0.5" height="15.0" fill="rgb(216,156,30)" rx="2" ry="2" />
+<text  x="1027.04" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_pool_key:261 (1 samples, 0.03%)</title><rect x="1017.5" y="213" width="0.4" height="15.0" fill="rgb(253,82,52)" rx="2" ry="2" />
+<text  x="1020.54" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/structures.py:__init__:41 (1 samples, 0.03%)</title><rect x="1015.5" y="293" width="0.4" height="15.0" fill="rgb(244,221,34)" rx="2" ry="2" />
+<text  x="1018.50" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:clear:204 (1 samples, 0.03%)</title><rect x="1016.7" y="277" width="0.4" height="15.0" fill="rgb(218,76,37)" rx="2" ry="2" />
+<text  x="1019.72" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:_send_output:881 (2 samples, 0.07%)</title><rect x="1017.9" y="197" width="0.9" height="15.0" fill="rgb(237,222,8)" rx="2" ry="2" />
+<text  x="1020.94" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:spawn:217 (1 samples, 0.03%)</title><rect x="1136.3" y="181" width="0.4" height="15.0" fill="rgb(251,209,34)" rx="2" ry="2" />
+<text  x="1139.31" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:setnx:59 (1 samples, 0.03%)</title><rect x="1021.6" y="373" width="0.4" height="15.0" fill="rgb(244,47,9)" rx="2" ry="2" />
+<text  x="1024.60" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_read_from_socket:174 (1 samples, 0.03%)</title><rect x="1174.5" y="245" width="0.5" height="15.0" fill="rgb(246,181,14)" rx="2" ry="2" />
+<text  x="1177.54" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (1 samples, 0.03%)</title><rect x="1015.1" y="357" width="0.4" height="15.0" fill="rgb(228,29,54)" rx="2" ry="2" />
+<text  x="1018.09" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/cookies.py:cookiejar_from_dict:521 (1 samples, 0.03%)</title><rect x="1176.6" y="325" width="0.4" height="15.0" fill="rgb(209,168,43)" rx="2" ry="2" />
+<text  x="1179.58" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/db.py:query:121 (1 samples, 0.03%)</title><rect x="1178.2" y="389" width="0.4" height="15.0" fill="rgb(248,224,44)" rx="2" ry="2" />
+<text  x="1181.20" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:291 (3 samples, 0.10%)</title><rect x="1089.1" y="309" width="1.2" height="15.0" fill="rgb(234,149,7)" rx="2" ry="2" />
+<text  x="1092.12" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:build_response:265 (1 samples, 0.03%)</title><rect x="1025.7" y="293" width="0.4" height="15.0" fill="rgb(242,220,6)" rx="2" ry="2" />
+<text  x="1028.67" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:get_run_info:143 (3 samples, 0.10%)</title><rect x="1172.9" y="389" width="1.2" height="15.0" fill="rgb(226,130,40)" rx="2" ry="2" />
+<text  x="1175.92" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/response.py:__init__:522 (1 samples, 0.03%)</title><rect x="1175.4" y="405" width="0.4" height="15.0" fill="rgb(235,143,47)" rx="2" ry="2" />
+<text  x="1178.36" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/middleware/clickjacking.py:process_response:32 (1 samples, 0.03%)</title><rect x="1180.6" y="533" width="0.5" height="15.0" fill="rgb(229,160,14)" rx="2" ry="2" />
+<text  x="1183.64" y="543.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:323 (85 samples, 2.93%)</title><rect x="1136.3" y="341" width="34.6" height="15.0" fill="rgb(210,31,13)" rx="2" ry="2" />
+<text  x="1139.31" y="351.5" >/u..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:connect:484 (1 samples, 0.03%)</title><rect x="1031.4" y="261" width="0.4" height="15.0" fill="rgb(205,112,28)" rx="2" ry="2" />
+<text  x="1034.37" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:_acquireLock:217 (1 samples, 0.03%)</title><rect x="1183.9" y="693" width="0.4" height="15.0" fill="rgb(208,92,12)" rx="2" ry="2" />
+<text  x="1186.90" y="703.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:close:736 (1 samples, 0.03%)</title><rect x="1016.7" y="309" width="0.4" height="15.0" fill="rgb(229,44,52)" rx="2" ry="2" />
+<text  x="1019.72" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_threading.py:put:159 (1 samples, 0.03%)</title><rect x="1136.7" y="165" width="0.4" height="15.0" fill="rgb(217,43,46)" rx="2" ry="2" />
+<text  x="1139.71" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (418 samples, 14.41%)</title><rect x="1012.2" y="613" width="170.1" height="15.0" fill="rgb(228,42,31)" rx="2" ry="2" />
+<text  x="1015.25" y="623.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/resolver/thread.py:getaddrinfo:65 (2 samples, 0.07%)</title><rect x="1027.3" y="213" width="0.8" height="15.0" fill="rgb(206,92,29)" rx="2" ry="2" />
+<text  x="1030.30" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:connect:484 (1 samples, 0.03%)</title><rect x="1136.3" y="261" width="0.4" height="15.0" fill="rgb(244,197,13)" rx="2" ry="2" />
+<text  x="1139.31" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (423 samples, 14.58%)</title><rect x="1010.2" y="677" width="172.1" height="15.0" fill="rgb(244,148,5)" rx="2" ry="2" />
+<text  x="1013.21" y="687.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/response.py:__setitem__:151 (1 samples, 0.03%)</title><rect x="1181.1" y="517" width="0.4" height="15.0" fill="rgb(234,48,42)" rx="2" ry="2" />
+<text  x="1184.05" y="527.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (408 samples, 14.06%)</title><rect x="1014.3" y="469" width="165.9" height="15.0" fill="rgb(229,55,23)" rx="2" ry="2" />
+<text  x="1017.28" y="479.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:should_close:231 (1 samples, 0.03%)</title><rect x="1183.1" y="789" width="0.4" height="15.0" fill="rgb(219,46,13)" rx="2" ry="2" />
+<text  x="1186.09" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:357 (1 samples, 0.03%)</title><rect x="1117.6" y="341" width="0.4" height="15.0" fill="rgb(240,199,20)" rx="2" ry="2" />
+<text  x="1120.60" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/view.py:run_info:57 (96 samples, 3.31%)</title><rect x="1136.3" y="421" width="39.1" height="15.0" fill="rgb(254,227,2)" rx="2" ry="2" />
+<text  x="1139.31" y="431.5" >/us..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/async.py:handle:56 (442 samples, 15.24%)</title><rect x="1006.1" y="837" width="179.8" height="15.0" fill="rgb(205,103,12)" rx="2" ry="2" />
+<text  x="1009.15" y="847.5" >/usr/lib/python2.7/site..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (1 samples, 0.03%)</title><rect x="1135.9" y="341" width="0.4" height="15.0" fill="rgb(238,153,46)" rx="2" ry="2" />
+<text  x="1138.90" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:send:449 (3 samples, 0.10%)</title><rect x="1017.9" y="293" width="1.3" height="15.0" fill="rgb(250,92,1)" rx="2" ry="2" />
+<text  x="1020.94" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/crc.py:_crc16_py2:56 (1 samples, 0.03%)</title><rect x="1117.2" y="293" width="0.4" height="15.0" fill="rgb(240,12,2)" rx="2" ry="2" />
+<text  x="1120.19" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:_send_output:881 (1 samples, 0.03%)</title><rect x="1177.8" y="229" width="0.4" height="15.0" fill="rgb(206,151,17)" rx="2" ry="2" />
+<text  x="1180.80" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:357 (4 samples, 0.14%)</title><rect x="1170.9" y="341" width="1.6" height="15.0" fill="rgb(217,135,18)" rx="2" ry="2" />
+<text  x="1173.88" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:get_redis_link:152 (1 samples, 0.03%)</title><rect x="1026.5" y="309" width="0.4" height="15.0" fill="rgb(235,210,43)" rx="2" ry="2" />
+<text  x="1029.48" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:hget:1963 (3 samples, 0.10%)</title><rect x="1174.1" y="357" width="1.3" height="15.0" fill="rgb(233,178,1)" rx="2" ry="2" />
+<text  x="1177.14" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:get_netrc_auth:172 (1 samples, 0.03%)</title><rect x="1177.0" y="325" width="0.4" height="15.0" fill="rgb(235,180,9)" rx="2" ry="2" />
+<text  x="1179.98" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (1 samples, 0.03%)</title><rect x="1015.1" y="325" width="0.4" height="15.0" fill="rgb(220,73,49)" rx="2" ry="2" />
+<text  x="1018.09" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_context:240 (1 samples, 0.03%)</title><rect x="1017.5" y="229" width="0.4" height="15.0" fill="rgb(241,102,15)" rx="2" ry="2" />
+<text  x="1020.54" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:315 (1 samples, 0.03%)</title><rect x="1175.0" y="277" width="0.4" height="15.0" fill="rgb(227,98,28)" rx="2" ry="2" />
+<text  x="1177.95" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:create:120 (3 samples, 0.10%)</title><rect x="1183.5" y="789" width="1.2" height="15.0" fill="rgb(254,84,54)" rx="2" ry="2" />
+<text  x="1186.49" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:288 (20 samples, 0.69%)</title><rect x="1078.5" y="309" width="8.2" height="15.0" fill="rgb(220,48,2)" rx="2" ry="2" />
+<text  x="1081.55" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/sessions/middleware.py:process_request:19 (1 samples, 0.03%)</title><rect x="1009.4" y="661" width="0.4" height="15.0" fill="rgb(236,218,19)" rx="2" ry="2" />
+<text  x="1012.40" y="671.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:__call__:157 (425 samples, 14.65%)</title><rect x="1009.4" y="789" width="172.9" height="15.0" fill="rgb(251,138,0)" rx="2" ry="2" />
+<text  x="1012.40" y="799.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/hub.py:run:565 (8 samples, 0.28%)</title><rect x="1185.9" y="853" width="3.3" height="15.0" fill="rgb(215,140,43)" rx="2" ry="2" />
+<text  x="1188.93" y="863.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/async.py:handle_request:115 (1 samples, 0.03%)</title><rect x="1182.3" y="805" width="0.4" height="15.0" fill="rgb(247,216,9)" rx="2" ry="2" />
+<text  x="1185.27" y="815.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:_make_request:357 (2 samples, 0.07%)</title><rect x="1017.9" y="261" width="0.9" height="15.0" fill="rgb(250,111,46)" rx="2" ry="2" />
+<text  x="1020.94" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:post:116 (11 samples, 0.38%)</title><rect x="1022.0" y="373" width="4.5" height="15.0" fill="rgb(233,20,33)" rx="2" ry="2" />
+<text  x="1025.01" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/cookies.py:extract_cookies_to_jar:129 (1 samples, 0.03%)</title><rect x="1019.2" y="261" width="0.4" height="15.0" fill="rgb(247,4,39)" rx="2" ry="2" />
+<text  x="1022.16" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:urlopen:617 (1 samples, 0.03%)</title><rect x="1025.3" y="293" width="0.4" height="15.0" fill="rgb(238,28,20)" rx="2" ry="2" />
+<text  x="1028.26" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:try_bet:266 (15 samples, 0.52%)</title><rect x="1015.5" y="405" width="6.1" height="15.0" fill="rgb(252,13,11)" rx="2" ry="2" />
+<text  x="1018.50" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/posixpath.py:expanduser:269 (1 samples, 0.03%)</title><rect x="1017.1" y="277" width="0.4" height="15.0" fill="rgb(244,62,46)" rx="2" ry="2" />
+<text  x="1020.13" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:142 (2 samples, 0.07%)</title><rect x="1181.5" y="581" width="0.8" height="15.0" fill="rgb(237,166,45)" rx="2" ry="2" />
+<text  x="1184.46" y="591.5" ></text>
+</g>
+<g >
+<title>all (2,901 samples, 100%)</title><rect x="10.0" y="869" width="1180.0" height="15.0" fill="rgb(230,43,20)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:__init__:370 (1 samples, 0.03%)</title><rect x="1176.2" y="357" width="0.4" height="15.0" fill="rgb(245,134,20)" rx="2" ry="2" />
+<text  x="1179.17" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:get_connection:315 (1 samples, 0.03%)</title><rect x="1017.5" y="277" width="0.4" height="15.0" fill="rgb(229,108,40)" rx="2" ry="2" />
+<text  x="1020.54" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:proxy_protocol:232 (1 samples, 0.03%)</title><rect x="1003.7" y="757" width="0.4" height="15.0" fill="rgb(210,80,41)" rx="2" ry="2" />
+<text  x="1006.71" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:execute_command:668 (6 samples, 0.21%)</title><rect x="1028.9" y="309" width="2.5" height="15.0" fill="rgb(233,174,18)" rx="2" ry="2" />
+<text  x="1031.92" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/resolver/thread.py:getaddrinfo:65 (1 samples, 0.03%)</title><rect x="1136.3" y="213" width="0.4" height="15.0" fill="rgb(208,113,8)" rx="2" ry="2" />
+<text  x="1139.31" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:204 (1 samples, 0.03%)</title><rect x="1032.6" y="325" width="0.4" height="15.0" fill="rgb(217,161,23)" rx="2" ry="2" />
+<text  x="1035.59" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:209 (4 samples, 0.14%)</title><rect x="1133.1" y="341" width="1.6" height="15.0" fill="rgb(223,188,4)" rx="2" ry="2" />
+<text  x="1136.05" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:hgetall:1967 (90 samples, 3.10%)</title><rect x="1136.3" y="373" width="36.6" height="15.0" fill="rgb(224,139,16)" rx="2" ry="2" />
+<text  x="1139.31" y="383.5" >/us..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:__del__:469 (1 samples, 0.03%)</title><rect x="1116.8" y="309" width="0.4" height="15.0" fill="rgb(228,178,51)" rx="2" ry="2" />
+<text  x="1119.78" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/pool.py:apply:159 (1 samples, 0.03%)</title><rect x="1136.3" y="197" width="0.4" height="15.0" fill="rgb(233,94,44)" rx="2" ry="2" />
+<text  x="1139.31" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:get:39 (1 samples, 0.03%)</title><rect x="1021.2" y="357" width="0.4" height="15.0" fill="rgb(224,60,5)" rx="2" ry="2" />
+<text  x="1024.20" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_packed_command:585 (4 samples, 0.14%)</title><rect x="1027.3" y="277" width="1.6" height="15.0" fill="rgb(223,136,10)" rx="2" ry="2" />
+<text  x="1030.30" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (3 samples, 0.10%)</title><rect x="1172.9" y="341" width="1.2" height="15.0" fill="rgb(227,8,4)" rx="2" ry="2" />
+<text  x="1175.92" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:prepare:313 (1 samples, 0.03%)</title><rect x="1177.4" y="325" width="0.4" height="15.0" fill="rgb(220,39,27)" rx="2" ry="2" />
+<text  x="1180.39" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:__init__:105 (1 samples, 0.03%)</title><rect x="1008.2" y="773" width="0.4" height="15.0" fill="rgb(246,34,51)" rx="2" ry="2" />
+<text  x="1011.18" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:&lt;lambda&gt;:155 (1 samples, 0.03%)</title><rect x="1016.7" y="245" width="0.4" height="15.0" fill="rgb(216,106,23)" rx="2" ry="2" />
+<text  x="1019.72" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:__init__:181 (1 samples, 0.03%)</title><rect x="1017.5" y="181" width="0.4" height="15.0" fill="rgb(242,103,46)" rx="2" ry="2" />
+<text  x="1020.54" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_host:227 (1 samples, 0.03%)</title><rect x="1024.0" y="261" width="0.5" height="15.0" fill="rgb(242,102,18)" rx="2" ry="2" />
+<text  x="1027.04" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:hget:64 (2 samples, 0.07%)</title><rect x="1020.0" y="373" width="0.8" height="15.0" fill="rgb(220,62,45)" rx="2" ry="2" />
+<text  x="1022.98" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:recv:295 (1 samples, 0.03%)</title><rect x="1002.9" y="709" width="0.4" height="15.0" fill="rgb(221,137,12)" rx="2" ry="2" />
+<text  x="1005.89" y="719.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:284 (1 samples, 0.03%)</title><rect x="1117.6" y="293" width="0.4" height="15.0" fill="rgb(251,85,8)" rx="2" ry="2" />
+<text  x="1120.60" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:_make_request:357 (2 samples, 0.07%)</title><rect x="1024.5" y="277" width="0.8" height="15.0" fill="rgb(236,128,43)" rx="2" ry="2" />
+<text  x="1027.45" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:request:59 (1 samples, 0.03%)</title><rect x="1176.2" y="373" width="0.4" height="15.0" fill="rgb(219,13,19)" rx="2" ry="2" />
+<text  x="1179.17" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:138 (2 samples, 0.07%)</title><rect x="1009.4" y="677" width="0.8" height="15.0" fill="rgb(254,176,40)" rx="2" ry="2" />
+<text  x="1012.40" y="687.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/MySQLdb/cursors.py:_fetch_row:327 (25 samples, 0.86%)</title><rect x="1120.4" y="325" width="10.2" height="15.0" fill="rgb(242,165,54)" rx="2" ry="2" />
+<text  x="1123.44" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_command:610 (1 samples, 0.03%)</title><rect x="1136.7" y="293" width="0.4" height="15.0" fill="rgb(235,44,6)" rx="2" ry="2" />
+<text  x="1139.71" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:_ipv6_host:903 (1 samples, 0.03%)</title><rect x="1024.0" y="165" width="0.5" height="15.0" fill="rgb(252,23,35)" rx="2" ry="2" />
+<text  x="1027.04" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/async.py:handle_request:117 (1 samples, 0.03%)</title><rect x="1182.7" y="805" width="0.4" height="15.0" fill="rgb(241,217,35)" rx="2" ry="2" />
+<text  x="1185.68" y="815.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:default_environ:96 (1 samples, 0.03%)</title><rect x="1184.3" y="773" width="0.4" height="15.0" fill="rgb(236,174,19)" rx="2" ry="2" />
+<text  x="1187.31" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:138 (5 samples, 0.17%)</title><rect x="1010.2" y="645" width="2.0" height="15.0" fill="rgb(206,151,38)" rx="2" ry="2" />
+<text  x="1013.21" y="655.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:create:154 (2 samples, 0.07%)</title><rect x="1185.1" y="789" width="0.8" height="15.0" fill="rgb(213,104,27)" rx="2" ry="2" />
+<text  x="1188.12" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:__init__:637 (1 samples, 0.03%)</title><rect x="1025.7" y="277" width="0.4" height="15.0" fill="rgb(241,217,46)" rx="2" ry="2" />
+<text  x="1028.67" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/_collections.py:__init__:137 (1 samples, 0.03%)</title><rect x="1018.8" y="229" width="0.4" height="15.0" fill="rgb(253,132,26)" rx="2" ry="2" />
+<text  x="1021.76" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:urlopen:601 (1 samples, 0.03%)</title><rect x="1177.8" y="309" width="0.4" height="15.0" fill="rgb(225,47,41)" rx="2" ry="2" />
+<text  x="1180.80" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:_worker:281 (1 samples, 0.03%)</title><rect x="1189.6" y="853" width="0.4" height="15.0" fill="rgb(220,2,8)" rx="2" ry="2" />
+<text  x="1192.59" y="863.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (2 samples, 0.07%)</title><rect x="1117.2" y="357" width="0.8" height="15.0" fill="rgb(205,116,3)" rx="2" ry="2" />
+<text  x="1120.19" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/_collections.py:clear:94 (1 samples, 0.03%)</title><rect x="1016.7" y="261" width="0.4" height="15.0" fill="rgb(229,0,36)" rx="2" ry="2" />
+<text  x="1019.72" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:205 (1 samples, 0.03%)</title><rect x="1137.5" y="325" width="0.4" height="15.0" fill="rgb(210,140,27)" rx="2" ry="2" />
+<text  x="1140.53" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/db/utils.py:all:226 (2 samples, 0.07%)</title><rect x="1007.4" y="741" width="0.8" height="15.0" fill="rgb(235,224,7)" rx="2" ry="2" />
+<text  x="1010.37" y="751.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_connect:511 (2 samples, 0.07%)</title><rect x="1027.3" y="245" width="0.8" height="15.0" fill="rgb(254,30,25)" rx="2" ry="2" />
+<text  x="1030.30" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:__init__:370 (1 samples, 0.03%)</title><rect x="1015.5" y="325" width="0.4" height="15.0" fill="rgb(242,202,18)" rx="2" ry="2" />
+<text  x="1018.50" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/messages/middleware.py:process_response:24 (2 samples, 0.07%)</title><rect x="1181.5" y="565" width="0.8" height="15.0" fill="rgb(226,223,0)" rx="2" ry="2" />
+<text  x="1184.46" y="575.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_connect:511 (1 samples, 0.03%)</title><rect x="1136.7" y="245" width="0.4" height="15.0" fill="rgb(244,114,52)" rx="2" ry="2" />
+<text  x="1139.71" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (412 samples, 14.20%)</title><rect x="1013.9" y="581" width="167.6" height="15.0" fill="rgb(226,91,46)" rx="2" ry="2" />
+<text  x="1016.87" y="591.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:request:59 (1 samples, 0.03%)</title><rect x="1022.0" y="357" width="0.4" height="15.0" fill="rgb(251,199,49)" rx="2" ry="2" />
+<text  x="1025.01" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:try_bet:272 (1 samples, 0.03%)</title><rect x="1021.6" y="405" width="0.4" height="15.0" fill="rgb(233,93,23)" rx="2" ry="2" />
+<text  x="1024.60" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/MySQLdb/cursors.py:_post_get_result:359 (25 samples, 0.86%)</title><rect x="1120.4" y="341" width="10.2" height="15.0" fill="rgb(231,212,16)" rx="2" ry="2" />
+<text  x="1123.44" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:request:1041 (1 samples, 0.03%)</title><rect x="1177.8" y="277" width="0.4" height="15.0" fill="rgb(219,83,13)" rx="2" ry="2" />
+<text  x="1180.80" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (1 samples, 0.03%)</title><rect x="1020.8" y="309" width="0.4" height="15.0" fill="rgb(219,77,45)" rx="2" ry="2" />
+<text  x="1023.79" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/cookies.py:__init__:40 (1 samples, 0.03%)</title><rect x="1019.2" y="245" width="0.4" height="15.0" fill="rgb(225,140,9)" rx="2" ry="2" />
+<text  x="1022.16" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:_retryable_call:36 (1 samples, 0.03%)</title><rect x="1020.8" y="213" width="0.4" height="15.0" fill="rgb(209,138,28)" rx="2" ry="2" />
+<text  x="1023.79" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/structures.py:&lt;genexpr&gt;:58 (1 samples, 0.03%)</title><rect x="1023.2" y="261" width="0.4" height="15.0" fill="rgb(215,54,42)" rx="2" ry="2" />
+<text  x="1026.23" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:231 (2 samples, 0.07%)</title><rect x="1110.3" y="325" width="0.8" height="15.0" fill="rgb(252,4,19)" rx="2" ry="2" />
+<text  x="1113.28" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:send:449 (1 samples, 0.03%)</title><rect x="1177.8" y="325" width="0.4" height="15.0" fill="rgb(253,93,10)" rx="2" ry="2" />
+<text  x="1180.80" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/cookie.py:parse_cookie:68 (1 samples, 0.03%)</title><rect x="1009.4" y="613" width="0.4" height="15.0" fill="rgb(240,89,44)" rx="2" ry="2" />
+<text  x="1012.40" y="623.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__import__:89 (1 samples, 0.03%)</title><rect x="1188.8" y="789" width="0.4" height="15.0" fill="rgb(217,145,42)" rx="2" ry="2" />
+<text  x="1191.78" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/sessions/middleware.py:process_request:20 (1 samples, 0.03%)</title><rect x="1009.8" y="661" width="0.4" height="15.0" fill="rgb(234,198,20)" rx="2" ry="2" />
+<text  x="1012.81" y="671.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/_weakrefset.py:__contains__:73 (1 samples, 0.03%)</title><rect x="1022.0" y="261" width="0.4" height="15.0" fill="rgb(237,228,34)" rx="2" ry="2" />
+<text  x="1025.01" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (410 samples, 14.13%)</title><rect x="1013.9" y="533" width="166.7" height="15.0" fill="rgb(223,126,37)" rx="2" ry="2" />
+<text  x="1016.87" y="543.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/lru_cache.py:wrapper:96 (1 samples, 0.03%)</title><rect x="1014.3" y="437" width="0.4" height="15.0" fill="rgb(247,221,0)" rx="2" ry="2" />
+<text  x="1017.28" y="447.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:recv:70 (3 samples, 0.10%)</title><rect x="1170.9" y="245" width="1.2" height="15.0" fill="rgb(248,186,6)" rx="2" ry="2" />
+<text  x="1173.88" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:connect:233 (1 samples, 0.03%)</title><rect x="1028.1" y="229" width="0.4" height="15.0" fill="rgb(241,137,23)" rx="2" ry="2" />
+<text  x="1031.11" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (90 samples, 3.10%)</title><rect x="1136.3" y="357" width="36.6" height="15.0" fill="rgb(230,209,45)" rx="2" ry="2" />
+<text  x="1139.31" y="367.5" >/us..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/response.py:__init__:303 (1 samples, 0.03%)</title><rect x="1175.8" y="389" width="0.4" height="15.0" fill="rgb(247,171,0)" rx="2" ry="2" />
+<text  x="1178.76" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/random.py:choice:274 (1 samples, 0.03%)</title><rect x="1020.0" y="293" width="0.4" height="15.0" fill="rgb(217,10,41)" rx="2" ry="2" />
+<text  x="1022.98" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:__call__:154 (2 samples, 0.07%)</title><rect x="1006.6" y="789" width="0.8" height="15.0" fill="rgb(242,186,1)" rx="2" ry="2" />
+<text  x="1009.55" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:216 (1 samples, 0.03%)</title><rect x="1117.6" y="277" width="0.4" height="15.0" fill="rgb(222,19,43)" rx="2" ry="2" />
+<text  x="1120.60" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:is_forbidden_uid:32 (5 samples, 0.17%)</title><rect x="1131.0" y="405" width="2.1" height="15.0" fill="rgb(219,226,26)" rx="2" ry="2" />
+<text  x="1134.02" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:__init__:418 (1 samples, 0.03%)</title><rect x="1016.3" y="325" width="0.4" height="15.0" fill="rgb(225,107,33)" rx="2" ry="2" />
+<text  x="1019.32" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (418 samples, 14.41%)</title><rect x="1012.2" y="629" width="170.1" height="15.0" fill="rgb(214,35,31)" rx="2" ry="2" />
+<text  x="1015.25" y="639.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:try_bet:276 (11 samples, 0.38%)</title><rect x="1022.0" y="405" width="4.5" height="15.0" fill="rgb(230,56,41)" rx="2" ry="2" />
+<text  x="1025.01" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:_new_pool:195 (1 samples, 0.03%)</title><rect x="1017.5" y="197" width="0.4" height="15.0" fill="rgb(226,206,12)" rx="2" ry="2" />
+<text  x="1020.54" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (2 samples, 0.07%)</title><rect x="1174.5" y="293" width="0.9" height="15.0" fill="rgb(252,200,3)" rx="2" ry="2" />
+<text  x="1177.54" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_packed_command:590 (2 samples, 0.07%)</title><rect x="1173.3" y="293" width="0.8" height="15.0" fill="rgb(226,51,49)" rx="2" ry="2" />
+<text  x="1176.32" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socketcommon.py:getaddrinfo:196 (1 samples, 0.03%)</title><rect x="1177.8" y="149" width="0.4" height="15.0" fill="rgb(220,173,42)" rx="2" ry="2" />
+<text  x="1180.80" y="159.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (1 samples, 0.03%)</title><rect x="1021.2" y="325" width="0.4" height="15.0" fill="rgb(230,205,34)" rx="2" ry="2" />
+<text  x="1024.20" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/util.py:http_date:396 (1 samples, 0.03%)</title><rect x="1182.3" y="741" width="0.4" height="15.0" fill="rgb(240,135,37)" rx="2" ry="2" />
+<text  x="1185.27" y="751.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:_log:1267 (1 samples, 0.03%)</title><rect x="1178.6" y="405" width="0.4" height="15.0" fill="rgb(230,182,35)" rx="2" ry="2" />
+<text  x="1181.61" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/view.py:user_info:35 (1 samples, 0.03%)</title><rect x="1178.2" y="421" width="0.4" height="15.0" fill="rgb(211,45,9)" rx="2" ry="2" />
+<text  x="1181.20" y="431.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:347 (1 samples, 0.03%)</title><rect x="1020.0" y="325" width="0.4" height="15.0" fill="rgb(209,95,25)" rx="2" ry="2" />
+<text  x="1022.98" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:__exit__:349 (1 samples, 0.03%)</title><rect x="1174.5" y="181" width="0.5" height="15.0" fill="rgb(213,95,20)" rx="2" ry="2" />
+<text  x="1177.54" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/messages/storage/__init__.py:default_storage:12 (3 samples, 0.10%)</title><rect x="1012.7" y="549" width="1.2" height="15.0" fill="rgb(239,124,3)" rx="2" ry="2" />
+<text  x="1015.65" y="559.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:get:976 (8 samples, 0.28%)</title><rect x="1133.1" y="389" width="3.2" height="15.0" fill="rgb(234,180,37)" rx="2" ry="2" />
+<text  x="1136.05" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/base.py:get_response:124 (425 samples, 14.65%)</title><rect x="1009.4" y="773" width="172.9" height="15.0" fill="rgb(225,113,33)" rx="2" ry="2" />
+<text  x="1012.40" y="783.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/response.py:read:367 (1 samples, 0.03%)</title><rect x="1026.1" y="261" width="0.4" height="15.0" fill="rgb(246,77,42)" rx="2" ry="2" />
+<text  x="1029.08" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:hgetall:67 (90 samples, 3.10%)</title><rect x="1136.3" y="389" width="36.6" height="15.0" fill="rgb(206,5,12)" rx="2" ry="2" />
+<text  x="1139.31" y="399.5" >/us..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/response.py:get:174 (1 samples, 0.03%)</title><rect x="1180.6" y="517" width="0.5" height="15.0" fill="rgb(217,130,28)" rx="2" ry="2" />
+<text  x="1183.64" y="527.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:_acquireLock:216 (1 samples, 0.03%)</title><rect x="1183.5" y="693" width="0.4" height="15.0" fill="rgb(236,94,35)" rx="2" ry="2" />
+<text  x="1186.49" y="703.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:216 (1 samples, 0.03%)</title><rect x="1020.4" y="261" width="0.4" height="15.0" fill="rgb(233,184,9)" rx="2" ry="2" />
+<text  x="1023.38" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socketcommon.py:getaddrinfo:196 (1 samples, 0.03%)</title><rect x="1136.3" y="229" width="0.4" height="15.0" fill="rgb(226,85,10)" rx="2" ry="2" />
+<text  x="1139.31" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/parser.py:__next__:41 (8 samples, 0.28%)</title><rect x="1002.9" y="821" width="3.2" height="15.0" fill="rgb(232,206,46)" rx="2" ry="2" />
+<text  x="1005.89" y="831.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:220 (1 samples, 0.03%)</title><rect x="1029.3" y="213" width="0.4" height="15.0" fill="rgb(205,172,23)" rx="2" ry="2" />
+<text  x="1032.33" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:315 (2 samples, 0.07%)</title><rect x="1029.7" y="213" width="0.9" height="15.0" fill="rgb(240,36,16)" rx="2" ry="2" />
+<text  x="1032.74" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/urls/base.py:resolve:27 (2 samples, 0.07%)</title><rect x="1010.6" y="581" width="0.8" height="15.0" fill="rgb(226,68,29)" rx="2" ry="2" />
+<text  x="1013.62" y="591.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:hget:1963 (3 samples, 0.10%)</title><rect x="1172.9" y="357" width="1.2" height="15.0" fill="rgb(221,53,48)" rx="2" ry="2" />
+<text  x="1175.92" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/middleware/clickjacking.py:process_response:40 (1 samples, 0.03%)</title><rect x="1181.1" y="533" width="0.4" height="15.0" fill="rgb(244,31,48)" rx="2" ry="2" />
+<text  x="1184.05" y="543.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/urls/base.py:is_valid_path:158 (2 samples, 0.07%)</title><rect x="1010.6" y="597" width="0.8" height="15.0" fill="rgb(238,90,21)" rx="2" ry="2" />
+<text  x="1013.62" y="607.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/threading.py:Condition:252 (1 samples, 0.03%)</title><rect x="1017.5" y="149" width="0.4" height="15.0" fill="rgb(206,85,8)" rx="2" ry="2" />
+<text  x="1020.54" y="159.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (425 samples, 14.65%)</title><rect x="1009.4" y="757" width="172.9" height="15.0" fill="rgb(226,78,24)" rx="2" ry="2" />
+<text  x="1012.40" y="767.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_url:279 (1 samples, 0.03%)</title><rect x="1024.0" y="277" width="0.5" height="15.0" fill="rgb(236,27,4)" rx="2" ry="2" />
+<text  x="1027.04" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (418 samples, 14.41%)</title><rect x="1012.2" y="597" width="170.1" height="15.0" fill="rgb(235,150,25)" rx="2" ry="2" />
+<text  x="1015.25" y="607.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:hgetall:67 (1 samples, 0.03%)</title><rect x="1015.1" y="389" width="0.4" height="15.0" fill="rgb(224,149,28)" rx="2" ry="2" />
+<text  x="1018.09" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/base.py:_get_response:170 (1 samples, 0.03%)</title><rect x="1014.3" y="453" width="0.4" height="15.0" fill="rgb(251,50,41)" rx="2" ry="2" />
+<text  x="1017.28" y="463.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/urls/resolvers.py:resolve:201 (2 samples, 0.07%)</title><rect x="1010.6" y="549" width="0.8" height="15.0" fill="rgb(241,134,51)" rx="2" ry="2" />
+<text  x="1013.62" y="559.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_read_from_socket:174 (1 samples, 0.03%)</title><rect x="1020.8" y="245" width="0.4" height="15.0" fill="rgb(208,38,25)" rx="2" ry="2" />
+<text  x="1023.79" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/response.py:stream:436 (1 samples, 0.03%)</title><rect x="1026.1" y="277" width="0.4" height="15.0" fill="rgb(219,172,0)" rx="2" ry="2" />
+<text  x="1029.08" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:recv:295 (1 samples, 0.03%)</title><rect x="1117.6" y="213" width="0.4" height="15.0" fill="rgb(212,197,2)" rx="2" ry="2" />
+<text  x="1120.60" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:generate:750 (1 samples, 0.03%)</title><rect x="1026.1" y="293" width="0.4" height="15.0" fill="rgb(251,37,29)" rx="2" ry="2" />
+<text  x="1029.08" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:206 (29 samples, 1.00%)</title><rect x="1137.9" y="325" width="11.8" height="15.0" fill="rgb(248,180,5)" rx="2" ry="2" />
+<text  x="1140.94" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:324 (6 samples, 0.21%)</title><rect x="1028.9" y="261" width="2.5" height="15.0" fill="rgb(213,44,3)" rx="2" ry="2" />
+<text  x="1031.92" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connection.py:connect:166 (2 samples, 0.07%)</title><rect x="1017.9" y="165" width="0.9" height="15.0" fill="rgb(236,50,22)" rx="2" ry="2" />
+<text  x="1020.94" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:get:976 (1 samples, 0.03%)</title><rect x="1021.2" y="341" width="0.4" height="15.0" fill="rgb(206,51,35)" rx="2" ry="2" />
+<text  x="1024.20" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_packed_command:585 (1 samples, 0.03%)</title><rect x="1136.7" y="277" width="0.4" height="15.0" fill="rgb(221,180,12)" rx="2" ry="2" />
+<text  x="1139.71" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/pool.py:apply:159 (2 samples, 0.07%)</title><rect x="1017.9" y="85" width="0.9" height="15.0" fill="rgb(234,77,26)" rx="2" ry="2" />
+<text  x="1020.94" y="95.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/body.py:read:130 (1 samples, 0.03%)</title><rect x="1014.7" y="325" width="0.4" height="15.0" fill="rgb(240,221,17)" rx="2" ry="2" />
+<text  x="1017.69" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:324 (1 samples, 0.03%)</title><rect x="1172.1" y="293" width="0.4" height="15.0" fill="rgb(244,125,49)" rx="2" ry="2" />
+<text  x="1175.10" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/module_loading.py:import_string:20 (1 samples, 0.03%)</title><rect x="1009.8" y="613" width="0.4" height="15.0" fill="rgb(232,118,37)" rx="2" ry="2" />
+<text  x="1012.81" y="623.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/resolver/thread.py:getaddrinfo:65 (1 samples, 0.03%)</title><rect x="1177.8" y="133" width="0.4" height="15.0" fill="rgb(250,105,27)" rx="2" ry="2" />
+<text  x="1180.80" y="143.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:parse_headers:72 (1 samples, 0.03%)</title><rect x="1004.9" y="757" width="0.4" height="15.0" fill="rgb(211,139,15)" rx="2" ry="2" />
+<text  x="1007.93" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/threading.py:__init__:271 (1 samples, 0.03%)</title><rect x="1017.5" y="133" width="0.4" height="15.0" fill="rgb(250,38,22)" rx="2" ry="2" />
+<text  x="1020.54" y="143.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:adjust:185 (1 samples, 0.03%)</title><rect x="1018.3" y="53" width="0.5" height="15.0" fill="rgb(224,74,15)" rx="2" ry="2" />
+<text  x="1021.35" y="63.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:is_new_user:329 (1 samples, 0.03%)</title><rect x="1021.2" y="373" width="0.4" height="15.0" fill="rgb(246,190,27)" rx="2" ry="2" />
+<text  x="1024.20" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/view.py:bet:78 (8 samples, 0.28%)</title><rect x="1133.1" y="421" width="3.2" height="15.0" fill="rgb(243,228,53)" rx="2" ry="2" />
+<text  x="1136.05" y="431.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:prepare:313 (1 samples, 0.03%)</title><rect x="1022.8" y="309" width="0.4" height="15.0" fill="rgb(229,99,43)" rx="2" ry="2" />
+<text  x="1025.82" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__import__:98 (1 samples, 0.03%)</title><rect x="1009.8" y="581" width="0.4" height="15.0" fill="rgb(215,214,8)" rx="2" ry="2" />
+<text  x="1012.81" y="591.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:get_bytes_from_wsgi:220 (1 samples, 0.03%)</title><rect x="1008.6" y="741" width="0.4" height="15.0" fill="rgb(215,40,26)" rx="2" ry="2" />
+<text  x="1011.59" y="751.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_url:279 (1 samples, 0.03%)</title><rect x="1017.5" y="261" width="0.4" height="15.0" fill="rgb(249,55,42)" rx="2" ry="2" />
+<text  x="1020.54" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:__exit__:424 (1 samples, 0.03%)</title><rect x="1016.7" y="325" width="0.4" height="15.0" fill="rgb(236,152,43)" rx="2" ry="2" />
+<text  x="1019.72" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (425 samples, 14.65%)</title><rect x="1009.4" y="709" width="172.9" height="15.0" fill="rgb(241,55,24)" rx="2" ry="2" />
+<text  x="1012.40" y="719.5" >/usr/lib/python2.7/sit..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/email/utils.py:formatdate:173 (1 samples, 0.03%)</title><rect x="1182.3" y="725" width="0.4" height="15.0" fill="rgb(216,123,36)" rx="2" ry="2" />
+<text  x="1185.27" y="735.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:get:75 (11 samples, 0.38%)</title><rect x="1015.5" y="357" width="4.5" height="15.0" fill="rgb(231,159,45)" rx="2" ry="2" />
+<text  x="1018.50" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/view.py:bet:73 (37 samples, 1.28%)</title><rect x="1118.0" y="421" width="15.1" height="15.0" fill="rgb(211,216,34)" rx="2" ry="2" />
+<text  x="1121.00" y="431.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:send:449 (3 samples, 0.10%)</title><rect x="1024.5" y="309" width="1.2" height="15.0" fill="rgb(226,175,31)" rx="2" ry="2" />
+<text  x="1027.45" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:hgetall:1967 (223 samples, 7.69%)</title><rect x="1026.5" y="373" width="90.7" height="15.0" fill="rgb(225,159,11)" rx="2" ry="2" />
+<text  x="1029.48" y="383.5" >/usr/lib/p..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:callHandlers:1318 (3 samples, 0.10%)</title><rect x="1179.0" y="373" width="1.2" height="15.0" fill="rgb(223,136,19)" rx="2" ry="2" />
+<text  x="1182.02" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:311 (1 samples, 0.03%)</title><rect x="1095.2" y="309" width="0.4" height="15.0" fill="rgb(210,160,32)" rx="2" ry="2" />
+<text  x="1098.23" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_connect:511 (1 samples, 0.03%)</title><rect x="1031.4" y="245" width="0.4" height="15.0" fill="rgb(242,162,0)" rx="2" ry="2" />
+<text  x="1034.37" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:292 (1 samples, 0.03%)</title><rect x="1164.8" y="309" width="0.4" height="15.0" fill="rgb(231,180,12)" rx="2" ry="2" />
+<text  x="1167.78" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:216 (3 samples, 0.10%)</title><rect x="1170.9" y="277" width="1.2" height="15.0" fill="rgb(242,4,49)" rx="2" ry="2" />
+<text  x="1173.88" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_host:227 (1 samples, 0.03%)</title><rect x="1017.5" y="245" width="0.4" height="15.0" fill="rgb(220,130,8)" rx="2" ry="2" />
+<text  x="1020.54" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:138 (4 samples, 0.14%)</title><rect x="1012.2" y="581" width="1.7" height="15.0" fill="rgb(244,108,17)" rx="2" ry="2" />
+<text  x="1015.25" y="591.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (3 samples, 0.10%)</title><rect x="1174.1" y="341" width="1.3" height="15.0" fill="rgb(220,190,48)" rx="2" ry="2" />
+<text  x="1177.14" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/posixpath.py:expanduser:269 (1 samples, 0.03%)</title><rect x="1022.4" y="293" width="0.4" height="15.0" fill="rgb(226,194,18)" rx="2" ry="2" />
+<text  x="1025.42" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:user_has_enough_coins:225 (11 samples, 0.38%)</title><rect x="1015.5" y="389" width="4.5" height="15.0" fill="rgb(217,141,44)" rx="2" ry="2" />
+<text  x="1018.50" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:_start_new_or_dummy:275 (1 samples, 0.03%)</title><rect x="1117.6" y="197" width="0.4" height="15.0" fill="rgb(252,113,54)" rx="2" ry="2" />
+<text  x="1120.60" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:284 (1 samples, 0.03%)</title><rect x="1020.4" y="277" width="0.4" height="15.0" fill="rgb(223,110,18)" rx="2" ry="2" />
+<text  x="1023.38" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/StringIO.py:getvalue:272 (1 samples, 0.03%)</title><rect x="1014.7" y="309" width="0.4" height="15.0" fill="rgb(221,152,8)" rx="2" ry="2" />
+<text  x="1017.69" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:289 (3 samples, 0.10%)</title><rect x="1086.7" y="309" width="1.2" height="15.0" fill="rgb(245,176,24)" rx="2" ry="2" />
+<text  x="1089.68" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/config.py:is_ssl:181 (1 samples, 0.03%)</title><rect x="1184.7" y="773" width="0.4" height="15.0" fill="rgb(233,47,29)" rx="2" ry="2" />
+<text  x="1187.71" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:290 (2 samples, 0.07%)</title><rect x="1163.6" y="309" width="0.8" height="15.0" fill="rgb(224,84,51)" rx="2" ry="2" />
+<text  x="1166.56" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:__init__:167 (1 samples, 0.03%)</title><rect x="1024.0" y="197" width="0.5" height="15.0" fill="rgb(210,48,50)" rx="2" ry="2" />
+<text  x="1027.04" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:216 (1 samples, 0.03%)</title><rect x="1174.5" y="261" width="0.5" height="15.0" fill="rgb(232,203,40)" rx="2" ry="2" />
+<text  x="1177.54" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:default_headers:323 (1 samples, 0.03%)</title><rect x="1182.3" y="757" width="0.4" height="15.0" fill="rgb(253,13,19)" rx="2" ry="2" />
+<text  x="1185.27" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:parse:170 (1 samples, 0.03%)</title><rect x="1003.7" y="773" width="0.4" height="15.0" fill="rgb(214,107,7)" rx="2" ry="2" />
+<text  x="1006.71" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:291 (1 samples, 0.03%)</title><rect x="1164.4" y="309" width="0.4" height="15.0" fill="rgb(223,114,32)" rx="2" ry="2" />
+<text  x="1167.37" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:222 (37 samples, 1.28%)</title><rect x="1095.2" y="325" width="15.1" height="15.0" fill="rgb(213,94,35)" rx="2" ry="2" />
+<text  x="1098.23" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_packed_command:585 (1 samples, 0.03%)</title><rect x="1136.3" y="277" width="0.4" height="15.0" fill="rgb(251,45,12)" rx="2" ry="2" />
+<text  x="1139.31" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:216 (1 samples, 0.03%)</title><rect x="1020.8" y="261" width="0.4" height="15.0" fill="rgb(217,19,27)" rx="2" ry="2" />
+<text  x="1023.79" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:prepare_headers:446 (1 samples, 0.03%)</title><rect x="1023.2" y="293" width="0.4" height="15.0" fill="rgb(253,198,11)" rx="2" ry="2" />
+<text  x="1026.23" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/urlparse.py:urlunparse:251 (1 samples, 0.03%)</title><rect x="1177.4" y="293" width="0.4" height="15.0" fill="rgb(236,171,11)" rx="2" ry="2" />
+<text  x="1180.39" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_command:610 (1 samples, 0.03%)</title><rect x="1136.3" y="293" width="0.4" height="15.0" fill="rgb(226,209,31)" rx="2" ry="2" />
+<text  x="1139.31" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:connect:489 (1 samples, 0.03%)</title><rect x="1028.5" y="261" width="0.4" height="15.0" fill="rgb(229,79,41)" rx="2" ry="2" />
+<text  x="1031.52" y="271.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (6 samples, 0.21%)</title><rect x="1028.9" y="293" width="2.5" height="15.0" fill="rgb(235,150,1)" rx="2" ry="2" />
+<text  x="1031.92" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:284 (3 samples, 0.10%)</title><rect x="1170.9" y="293" width="1.2" height="15.0" fill="rgb(249,122,30)" rx="2" ry="2" />
+<text  x="1173.88" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/lock.py:release:239 (1 samples, 0.03%)</title><rect x="1013.5" y="485" width="0.4" height="15.0" fill="rgb(210,129,29)" rx="2" ry="2" />
+<text  x="1016.47" y="495.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_connect:511 (1 samples, 0.03%)</title><rect x="1136.3" y="245" width="0.4" height="15.0" fill="rgb(224,106,29)" rx="2" ry="2" />
+<text  x="1139.31" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:222 (8 samples, 0.28%)</title><rect x="1166.0" y="325" width="3.3" height="15.0" fill="rgb(211,229,26)" rx="2" ry="2" />
+<text  x="1169.00" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/xb_common/common/redis_helper.py:hget:64 (3 samples, 0.10%)</title><rect x="1172.9" y="373" width="1.2" height="15.0" fill="rgb(231,31,41)" rx="2" ry="2" />
+<text  x="1175.92" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connection.py:_new_conn:141 (1 samples, 0.03%)</title><rect x="1177.8" y="181" width="0.4" height="15.0" fill="rgb(216,208,34)" rx="2" ry="2" />
+<text  x="1180.80" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/utils.py:get_netrc_auth:178 (1 samples, 0.03%)</title><rect x="1022.4" y="309" width="0.4" height="15.0" fill="rgb(246,120,21)" rx="2" ry="2" />
+<text  x="1025.42" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:287 (29 samples, 1.00%)</title><rect x="1066.8" y="309" width="11.7" height="15.0" fill="rgb(237,71,32)" rx="2" ry="2" />
+<text  x="1069.75" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:&lt;setcomp&gt;:318 (2 samples, 0.07%)</title><rect x="1135.1" y="309" width="0.8" height="15.0" fill="rgb(253,217,24)" rx="2" ry="2" />
+<text  x="1138.09" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:prepare_request:449 (1 samples, 0.03%)</title><rect x="1022.4" y="325" width="0.4" height="15.0" fill="rgb(236,5,16)" rx="2" ry="2" />
+<text  x="1025.42" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:get_data:155 (1 samples, 0.03%)</title><rect x="1002.9" y="757" width="0.4" height="15.0" fill="rgb(236,194,29)" rx="2" ry="2" />
+<text  x="1005.89" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/pool.py:apply:159 (1 samples, 0.03%)</title><rect x="1136.7" y="197" width="0.4" height="15.0" fill="rgb(247,68,13)" rx="2" ry="2" />
+<text  x="1139.71" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:247 (4 samples, 0.14%)</title><rect x="1169.3" y="325" width="1.6" height="15.0" fill="rgb(251,71,24)" rx="2" ry="2" />
+<text  x="1172.26" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:284 (1 samples, 0.03%)</title><rect x="1135.9" y="309" width="0.4" height="15.0" fill="rgb(242,171,3)" rx="2" ry="2" />
+<text  x="1138.90" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:parse:201 (3 samples, 0.10%)</title><rect x="1004.5" y="773" width="1.2" height="15.0" fill="rgb(222,99,50)" rx="2" ry="2" />
+<text  x="1007.52" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/response.py:content:338 (1 samples, 0.03%)</title><rect x="1175.8" y="373" width="0.4" height="15.0" fill="rgb(246,96,5)" rx="2" ry="2" />
+<text  x="1178.76" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (1 samples, 0.03%)</title><rect x="1020.8" y="341" width="0.4" height="15.0" fill="rgb(218,39,31)" rx="2" ry="2" />
+<text  x="1023.79" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:209 (71 samples, 2.45%)</title><rect x="1061.9" y="325" width="28.9" height="15.0" fill="rgb(233,116,36)" rx="2" ry="2" />
+<text  x="1064.87" y="335.5" >/u..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/MySQLdb/connections.py:cursor:254 (1 samples, 0.03%)</title><rect x="1178.2" y="373" width="0.4" height="15.0" fill="rgb(213,17,26)" rx="2" ry="2" />
+<text  x="1181.20" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:325 (1 samples, 0.03%)</title><rect x="1172.1" y="277" width="0.4" height="15.0" fill="rgb(253,14,52)" rx="2" ry="2" />
+<text  x="1175.10" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:recv:295 (1 samples, 0.03%)</title><rect x="1174.5" y="197" width="0.5" height="15.0" fill="rgb(249,159,54)" rx="2" ry="2" />
+<text  x="1177.54" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_threading.py:notify_one:91 (1 samples, 0.03%)</title><rect x="1136.7" y="149" width="0.4" height="15.0" fill="rgb(208,171,9)" rx="2" ry="2" />
+<text  x="1139.71" y="159.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/workers/ggevent.py:handle_request:152 (442 samples, 15.24%)</title><rect x="1006.1" y="821" width="179.8" height="15.0" fill="rgb(249,135,11)" rx="2" ry="2" />
+<text  x="1009.15" y="831.5" >/usr/lib/python2.7/site..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:base_environ:78 (2 samples, 0.07%)</title><rect x="1183.5" y="757" width="0.8" height="15.0" fill="rgb(240,178,32)" rx="2" ry="2" />
+<text  x="1186.49" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (1 samples, 0.03%)</title><rect x="1020.4" y="293" width="0.4" height="15.0" fill="rgb(207,219,36)" rx="2" ry="2" />
+<text  x="1023.38" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (6 samples, 0.21%)</title><rect x="1028.9" y="277" width="2.5" height="15.0" fill="rgb(246,78,50)" rx="2" ry="2" />
+<text  x="1031.92" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:close:300 (1 samples, 0.03%)</title><rect x="1174.5" y="165" width="0.5" height="15.0" fill="rgb(205,27,6)" rx="2" ry="2" />
+<text  x="1177.54" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/request.py:body:272 (1 samples, 0.03%)</title><rect x="1014.7" y="405" width="0.4" height="15.0" fill="rgb(235,138,50)" rx="2" ry="2" />
+<text  x="1017.69" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:__init__:93 (1 samples, 0.03%)</title><rect x="1009.0" y="773" width="0.4" height="15.0" fill="rgb(231,223,7)" rx="2" ry="2" />
+<text  x="1011.99" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/twoside_guess_game_server/tools.py:wrapper:43 (4 samples, 0.14%)</title><rect x="1178.6" y="437" width="1.6" height="15.0" fill="rgb(228,159,46)" rx="2" ry="2" />
+<text  x="1181.61" y="447.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/helpers.py:get_json_body:53 (1 samples, 0.03%)</title><rect x="1014.7" y="421" width="0.4" height="15.0" fill="rgb(247,106,49)" rx="2" ry="2" />
+<text  x="1017.69" y="431.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:__init__:79 (1 samples, 0.03%)</title><rect x="1008.6" y="773" width="0.4" height="15.0" fill="rgb(242,126,38)" rx="2" ry="2" />
+<text  x="1011.59" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:recv:70 (1 samples, 0.03%)</title><rect x="1174.5" y="229" width="0.5" height="15.0" fill="rgb(206,195,41)" rx="2" ry="2" />
+<text  x="1177.54" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:142 (2 samples, 0.07%)</title><rect x="1180.6" y="549" width="0.9" height="15.0" fill="rgb(217,123,4)" rx="2" ry="2" />
+<text  x="1183.64" y="559.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/deprecation.py:__call__:140 (410 samples, 14.13%)</title><rect x="1013.9" y="517" width="166.7" height="15.0" fill="rgb(242,96,24)" rx="2" ry="2" />
+<text  x="1016.87" y="527.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:216 (1 samples, 0.03%)</title><rect x="1135.9" y="293" width="0.4" height="15.0" fill="rgb(229,35,32)" rx="2" ry="2" />
+<text  x="1138.90" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socketcommon.py:getaddrinfo:196 (2 samples, 0.07%)</title><rect x="1017.9" y="117" width="0.9" height="15.0" fill="rgb(221,221,15)" rx="2" ry="2" />
+<text  x="1020.94" y="127.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:__init__:217 (1 samples, 0.03%)</title><rect x="1171.7" y="165" width="0.4" height="15.0" fill="rgb(245,155,53)" rx="2" ry="2" />
+<text  x="1174.70" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:endheaders:1037 (2 samples, 0.07%)</title><rect x="1017.9" y="213" width="0.9" height="15.0" fill="rgb(237,194,20)" rx="2" ry="2" />
+<text  x="1020.94" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:314 (18 samples, 0.62%)</title><rect x="1095.6" y="309" width="7.4" height="15.0" fill="rgb(242,66,22)" rx="2" ry="2" />
+<text  x="1098.63" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socketcommon.py:getaddrinfo:196 (2 samples, 0.07%)</title><rect x="1027.3" y="229" width="0.8" height="15.0" fill="rgb(229,125,20)" rx="2" ry="2" />
+<text  x="1030.30" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:formatTime:427 (1 samples, 0.03%)</title><rect x="1179.0" y="277" width="0.4" height="15.0" fill="rgb(212,83,22)" rx="2" ry="2" />
+<text  x="1182.02" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:send:686 (1 samples, 0.03%)</title><rect x="1026.1" y="325" width="0.4" height="15.0" fill="rgb(235,37,7)" rx="2" ry="2" />
+<text  x="1029.08" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:330 (1 samples, 0.03%)</title><rect x="1117.2" y="341" width="0.4" height="15.0" fill="rgb(215,161,29)" rx="2" ry="2" />
+<text  x="1120.19" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/base.py:_get_response:185 (407 samples, 14.03%)</title><rect x="1014.7" y="453" width="165.5" height="15.0" fill="rgb(222,157,39)" rx="2" ry="2" />
+<text  x="1017.69" y="463.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:356 (3 samples, 0.10%)</title><rect x="1172.9" y="325" width="1.2" height="15.0" fill="rgb(225,134,17)" rx="2" ry="2" />
+<text  x="1175.92" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:request:59 (3 samples, 0.10%)</title><rect x="1015.5" y="341" width="1.2" height="15.0" fill="rgb(228,106,28)" rx="2" ry="2" />
+<text  x="1018.50" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:__init__:159 (1 samples, 0.03%)</title><rect x="1015.9" y="277" width="0.4" height="15.0" fill="rgb(210,210,12)" rx="2" ry="2" />
+<text  x="1018.91" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:_on_async:379 (1 samples, 0.03%)</title><rect x="1188.0" y="837" width="0.4" height="15.0" fill="rgb(238,96,14)" rx="2" ry="2" />
+<text  x="1190.97" y="847.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:_send_request:1069 (1 samples, 0.03%)</title><rect x="1024.5" y="245" width="0.4" height="15.0" fill="rgb(236,130,16)" rx="2" ry="2" />
+<text  x="1027.45" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/importlib/__init__.py:import_module:37 (1 samples, 0.03%)</title><rect x="1009.8" y="597" width="0.4" height="15.0" fill="rgb(221,179,40)" rx="2" ry="2" />
+<text  x="1012.81" y="607.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:347 (1 samples, 0.03%)</title><rect x="1174.1" y="325" width="0.4" height="15.0" fill="rgb(247,73,36)" rx="2" ry="2" />
+<text  x="1177.14" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:get_user_coins:455 (11 samples, 0.38%)</title><rect x="1015.5" y="373" width="4.5" height="15.0" fill="rgb(206,23,4)" rx="2" ry="2" />
+<text  x="1018.50" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:send:843 (1 samples, 0.03%)</title><rect x="1177.8" y="213" width="0.4" height="15.0" fill="rgb(254,98,42)" rx="2" ry="2" />
+<text  x="1180.80" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:endheaders:1037 (1 samples, 0.03%)</title><rect x="1024.9" y="229" width="0.4" height="15.0" fill="rgb(228,78,46)" rx="2" ry="2" />
+<text  x="1027.86" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:execute_command:673 (1 samples, 0.03%)</title><rect x="1136.7" y="309" width="0.4" height="15.0" fill="rgb(205,140,24)" rx="2" ry="2" />
+<text  x="1139.71" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:send:412 (2 samples, 0.07%)</title><rect x="1023.6" y="309" width="0.9" height="15.0" fill="rgb(229,70,36)" rx="2" ry="2" />
+<text  x="1026.64" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:_retryable_call:58 (3 samples, 0.10%)</title><rect x="1170.9" y="229" width="1.2" height="15.0" fill="rgb(220,110,10)" rx="2" ry="2" />
+<text  x="1173.88" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:_adjust_step:173 (1 samples, 0.03%)</title><rect x="1018.3" y="37" width="0.5" height="15.0" fill="rgb(222,88,45)" rx="2" ry="2" />
+<text  x="1021.35" y="47.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/response.py:_init_length:226 (1 samples, 0.03%)</title><rect x="1025.3" y="245" width="0.4" height="15.0" fill="rgb(251,118,20)" rx="2" ry="2" />
+<text  x="1028.26" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:_log:1268 (3 samples, 0.10%)</title><rect x="1179.0" y="405" width="1.2" height="15.0" fill="rgb(232,53,36)" rx="2" ry="2" />
+<text  x="1182.02" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:readline:212 (1 samples, 0.03%)</title><rect x="1028.9" y="213" width="0.4" height="15.0" fill="rgb(205,80,12)" rx="2" ry="2" />
+<text  x="1031.92" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/urllib.py:quote:1271 (1 samples, 0.03%)</title><rect x="1011.8" y="581" width="0.4" height="15.0" fill="rgb(225,103,40)" rx="2" ry="2" />
+<text  x="1014.84" y="591.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socketcommon.py:getaddrinfo:196 (1 samples, 0.03%)</title><rect x="1136.7" y="229" width="0.4" height="15.0" fill="rgb(231,208,41)" rx="2" ry="2" />
+<text  x="1139.71" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:request:60 (10 samples, 0.34%)</title><rect x="1022.4" y="357" width="4.1" height="15.0" fill="rgb(229,178,8)" rx="2" ry="2" />
+<text  x="1025.42" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/MySQLdb/cursors.py:execute:190 (25 samples, 0.86%)</title><rect x="1120.4" y="373" width="10.2" height="15.0" fill="rgb(221,89,2)" rx="2" ry="2" />
+<text  x="1123.44" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:COOKIES:135 (1 samples, 0.03%)</title><rect x="1009.4" y="629" width="0.4" height="15.0" fill="rgb(208,209,26)" rx="2" ry="2" />
+<text  x="1012.40" y="639.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (410 samples, 14.13%)</title><rect x="1013.9" y="501" width="166.7" height="15.0" fill="rgb(229,3,45)" rx="2" ry="2" />
+<text  x="1016.87" y="511.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/handlers.py:shouldRollover:155 (1 samples, 0.03%)</title><rect x="1179.4" y="325" width="0.4" height="15.0" fill="rgb(223,213,35)" rx="2" ry="2" />
+<text  x="1182.42" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/wsgi.py:read:47 (1 samples, 0.03%)</title><rect x="1014.7" y="373" width="0.4" height="15.0" fill="rgb(221,23,18)" rx="2" ry="2" />
+<text  x="1017.69" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (1 samples, 0.03%)</title><rect x="1015.1" y="309" width="0.4" height="15.0" fill="rgb(246,185,29)" rx="2" ry="2" />
+<text  x="1018.09" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/middleware/common.py:process_request:66 (2 samples, 0.07%)</title><rect x="1011.4" y="629" width="0.8" height="15.0" fill="rgb(216,46,49)" rx="2" ry="2" />
+<text  x="1014.43" y="639.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:handle:749 (3 samples, 0.10%)</title><rect x="1179.0" y="357" width="1.2" height="15.0" fill="rgb(226,20,38)" rx="2" ry="2" />
+<text  x="1182.02" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/threadpool.py:__init__:366 (1 samples, 0.03%)</title><rect x="1031.4" y="165" width="0.4" height="15.0" fill="rgb(214,218,13)" rx="2" ry="2" />
+<text  x="1034.37" y="175.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:handle:1278 (3 samples, 0.10%)</title><rect x="1179.0" y="389" width="1.2" height="15.0" fill="rgb(252,21,36)" rx="2" ry="2" />
+<text  x="1182.02" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:287 (1 samples, 0.03%)</title><rect x="1133.5" y="325" width="0.4" height="15.0" fill="rgb(254,207,53)" rx="2" ry="2" />
+<text  x="1136.46" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:284 (1 samples, 0.03%)</title><rect x="1020.8" y="277" width="0.4" height="15.0" fill="rgb(232,35,31)" rx="2" ry="2" />
+<text  x="1023.79" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:send_command:610 (1 samples, 0.03%)</title><rect x="1031.4" y="293" width="0.4" height="15.0" fill="rgb(219,134,15)" rx="2" ry="2" />
+<text  x="1034.37" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_tblib.py:dump_traceback:426 (2 samples, 0.07%)</title><rect x="1188.4" y="805" width="0.8" height="15.0" fill="rgb(205,35,0)" rx="2" ry="2" />
+<text  x="1191.37" y="815.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__import__:96 (1 samples, 0.03%)</title><rect x="1013.1" y="501" width="0.4" height="15.0" fill="rgb(248,9,38)" rx="2" ry="2" />
+<text  x="1016.06" y="511.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:247 (12 samples, 0.41%)</title><rect x="1111.9" y="325" width="4.9" height="15.0" fill="rgb(209,195,25)" rx="2" ry="2" />
+<text  x="1114.90" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:288 (9 samples, 0.31%)</title><rect x="1159.1" y="309" width="3.6" height="15.0" fill="rgb(242,102,22)" rx="2" ry="2" />
+<text  x="1162.09" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:decode:125 (1 samples, 0.03%)</title><rect x="1030.6" y="197" width="0.4" height="15.0" fill="rgb(232,95,45)" rx="2" ry="2" />
+<text  x="1033.55" y="207.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:357 (1 samples, 0.03%)</title><rect x="1135.9" y="357" width="0.4" height="15.0" fill="rgb(247,162,4)" rx="2" ry="2" />
+<text  x="1138.90" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/util/connection.py:create_connection:60 (2 samples, 0.07%)</title><rect x="1017.9" y="133" width="0.9" height="15.0" fill="rgb(206,158,30)" rx="2" ry="2" />
+<text  x="1020.94" y="143.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:get_data:160 (1 samples, 0.03%)</title><rect x="1003.3" y="757" width="0.4" height="15.0" fill="rgb(217,227,49)" rx="2" ry="2" />
+<text  x="1006.30" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:endheaders:1037 (1 samples, 0.03%)</title><rect x="1177.8" y="245" width="0.4" height="15.0" fill="rgb(247,221,15)" rx="2" ry="2" />
+<text  x="1180.80" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:323 (223 samples, 7.69%)</title><rect x="1026.5" y="341" width="90.7" height="15.0" fill="rgb(239,57,5)" rx="2" ry="2" />
+<text  x="1029.48" y="351.5" >/usr/lib/p..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/utils/functional.py:__get__:35 (1 samples, 0.03%)</title><rect x="1009.4" y="645" width="0.4" height="15.0" fill="rgb(234,143,26)" rx="2" ry="2" />
+<text  x="1012.40" y="655.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/response.py:from_httplib:467 (1 samples, 0.03%)</title><rect x="1025.3" y="277" width="0.4" height="15.0" fill="rgb(231,99,6)" rx="2" ry="2" />
+<text  x="1028.26" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/request.py:encoding:228 (1 samples, 0.03%)</title><rect x="1008.2" y="757" width="0.4" height="15.0" fill="rgb(219,72,17)" rx="2" ry="2" />
+<text  x="1011.18" y="767.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:send_headers:333 (1 samples, 0.03%)</title><rect x="1182.3" y="773" width="0.4" height="15.0" fill="rgb(239,54,21)" rx="2" ry="2" />
+<text  x="1185.27" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:execute_command:673 (1 samples, 0.03%)</title><rect x="1031.4" y="309" width="0.4" height="15.0" fill="rgb(222,51,0)" rx="2" ry="2" />
+<text  x="1034.37" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:getLogger:1556 (2 samples, 0.07%)</title><rect x="1183.5" y="725" width="0.8" height="15.0" fill="rgb(248,81,18)" rx="2" ry="2" />
+<text  x="1186.49" y="735.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/sessions/backends/db.py:__init__:18 (1 samples, 0.03%)</title><rect x="1009.8" y="645" width="0.4" height="15.0" fill="rgb(237,96,45)" rx="2" ry="2" />
+<text  x="1012.81" y="655.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_read_from_socket:174 (1 samples, 0.03%)</title><rect x="1020.4" y="245" width="0.4" height="15.0" fill="rgb(228,139,25)" rx="2" ry="2" />
+<text  x="1023.38" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/unreader.py:read:38 (1 samples, 0.03%)</title><rect x="1002.9" y="741" width="0.4" height="15.0" fill="rgb(239,3,30)" rx="2" ry="2" />
+<text  x="1005.89" y="751.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/request.py:get_host:104 (1 samples, 0.03%)</title><rect x="1010.2" y="613" width="0.4" height="15.0" fill="rgb(221,130,52)" rx="2" ry="2" />
+<text  x="1013.21" y="623.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:318 (3 samples, 0.10%)</title><rect x="1103.0" y="309" width="1.2" height="15.0" fill="rgb(225,33,14)" rx="2" ry="2" />
+<text  x="1105.95" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/handlers.py:emit:78 (1 samples, 0.03%)</title><rect x="1179.8" y="341" width="0.4" height="15.0" fill="rgb(246,62,45)" rx="2" ry="2" />
+<text  x="1182.83" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/response.py:__init__:531 (1 samples, 0.03%)</title><rect x="1175.8" y="405" width="0.4" height="15.0" fill="rgb(213,58,6)" rx="2" ry="2" />
+<text  x="1178.76" y="415.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/connectionpool.py:close:419 (1 samples, 0.03%)</title><rect x="1016.7" y="229" width="0.4" height="15.0" fill="rgb(217,63,29)" rx="2" ry="2" />
+<text  x="1019.72" y="239.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:parse_response:680 (1 samples, 0.03%)</title><rect x="1020.4" y="309" width="0.4" height="15.0" fill="rgb(217,112,33)" rx="2" ry="2" />
+<text  x="1023.38" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:initialize:232 (2 samples, 0.07%)</title><rect x="1111.1" y="325" width="0.8" height="15.0" fill="rgb(237,60,29)" rx="2" ry="2" />
+<text  x="1114.09" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:prepare_request:462 (1 samples, 0.03%)</title><rect x="1177.4" y="341" width="0.4" height="15.0" fill="rgb(219,121,15)" rx="2" ry="2" />
+<text  x="1180.39" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:warning:1161 (4 samples, 0.14%)</title><rect x="1178.6" y="421" width="1.6" height="15.0" fill="rgb(222,35,40)" rx="2" ry="2" />
+<text  x="1181.61" y="431.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/models.py:prepare_url:438 (1 samples, 0.03%)</title><rect x="1022.8" y="293" width="0.4" height="15.0" fill="rgb(227,53,35)" rx="2" ry="2" />
+<text  x="1025.82" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/timeout.py:start_new:256 (1 samples, 0.03%)</title><rect x="1117.6" y="181" width="0.4" height="15.0" fill="rgb(212,16,24)" rx="2" ry="2" />
+<text  x="1120.60" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (1 samples, 0.03%)</title><rect x="1020.8" y="293" width="0.4" height="15.0" fill="rgb(240,153,14)" rx="2" ry="2" />
+<text  x="1023.79" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:320 (4 samples, 0.14%)</title><rect x="1167.6" y="309" width="1.7" height="15.0" fill="rgb(209,9,13)" rx="2" ry="2" />
+<text  x="1170.63" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__import__:81 (1 samples, 0.03%)</title><rect x="1177.0" y="309" width="0.4" height="15.0" fill="rgb(211,30,3)" rx="2" ry="2" />
+<text  x="1179.98" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/__init__.py:makeRecord:1241 (1 samples, 0.03%)</title><rect x="1178.6" y="389" width="0.4" height="15.0" fill="rgb(222,109,16)" rx="2" ry="2" />
+<text  x="1181.61" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:default_environ:89 (2 samples, 0.07%)</title><rect x="1183.5" y="773" width="0.8" height="15.0" fill="rgb(242,21,44)" rx="2" ry="2" />
+<text  x="1186.49" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/client.py:execute_command:357 (1 samples, 0.03%)</title><rect x="1020.4" y="325" width="0.4" height="15.0" fill="rgb(248,140,52)" rx="2" ry="2" />
+<text  x="1023.38" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:build_response:284 (1 samples, 0.03%)</title><rect x="1019.2" y="277" width="0.4" height="15.0" fill="rgb(221,146,51)" rx="2" ry="2" />
+<text  x="1022.16" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:__init__:129 (1 samples, 0.03%)</title><rect x="1015.9" y="309" width="0.4" height="15.0" fill="rgb(229,190,29)" rx="2" ry="2" />
+<text  x="1018.91" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:get_run_info_or_result:185 (90 samples, 3.10%)</title><rect x="1136.3" y="405" width="36.6" height="15.0" fill="rgb(253,185,17)" rx="2" ry="2" />
+<text  x="1139.31" y="415.5" >/us..</text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/utils.py:inner:101 (1 samples, 0.03%)</title><rect x="1021.6" y="341" width="0.4" height="15.0" fill="rgb(223,137,16)" rx="2" ry="2" />
+<text  x="1024.60" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:send:649 (1 samples, 0.03%)</title><rect x="1019.6" y="309" width="0.4" height="15.0" fill="rgb(217,29,41)" rx="2" ry="2" />
+<text  x="1022.57" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/local/vntop/server/twoside_guess_game/utility/db_utility.py:user_has_enough_coins:233 (2 samples, 0.07%)</title><rect x="1020.0" y="389" width="0.8" height="15.0" fill="rgb(242,78,29)" rx="2" ry="2" />
+<text  x="1022.98" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/_socket2.py:connect:243 (1 samples, 0.03%)</title><rect x="1024.9" y="133" width="0.4" height="15.0" fill="rgb(221,92,15)" rx="2" ry="2" />
+<text  x="1027.86" y="143.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/collections.py:__init__:52 (1 samples, 0.03%)</title><rect x="1022.0" y="293" width="0.4" height="15.0" fill="rgb(248,184,39)" rx="2" ry="2" />
+<text  x="1025.01" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:read_response:624 (1 samples, 0.03%)</title><rect x="1117.6" y="309" width="0.4" height="15.0" fill="rgb(246,3,48)" rx="2" ry="2" />
+<text  x="1120.60" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/api.py:request:60 (4 samples, 0.14%)</title><rect x="1176.6" y="373" width="1.6" height="15.0" fill="rgb(211,127,54)" rx="2" ry="2" />
+<text  x="1179.58" y="383.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/abc.py:__subclasscheck__:151 (1 samples, 0.03%)</title><rect x="1022.0" y="277" width="0.4" height="15.0" fill="rgb(245,184,38)" rx="2" ry="2" />
+<text  x="1025.01" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/wsgi.py:create:124 (1 samples, 0.03%)</title><rect x="1184.7" y="789" width="0.4" height="15.0" fill="rgb(206,95,44)" rx="2" ry="2" />
+<text  x="1187.71" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/httplib.py:request:1041 (2 samples, 0.07%)</title><rect x="1017.9" y="245" width="0.9" height="15.0" fill="rgb(205,161,39)" rx="2" ry="2" />
+<text  x="1020.94" y="255.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/adapters.py:get_connection:315 (2 samples, 0.07%)</title><rect x="1023.6" y="293" width="0.9" height="15.0" fill="rgb(239,54,8)" rx="2" ry="2" />
+<text  x="1026.64" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/encodings/utf_8.py:decode:16 (1 samples, 0.03%)</title><rect x="1030.6" y="181" width="0.4" height="15.0" fill="rgb(253,66,14)" rx="2" ry="2" />
+<text  x="1033.55" y="191.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/middleware/common.py:process_request:63 (2 samples, 0.07%)</title><rect x="1010.6" y="629" width="0.8" height="15.0" fill="rgb(233,36,49)" rx="2" ry="2" />
+<text  x="1013.62" y="639.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/urls/resolvers.py:resolve:366 (2 samples, 0.07%)</title><rect x="1010.6" y="565" width="0.8" height="15.0" fill="rgb(230,20,31)" rx="2" ry="2" />
+<text  x="1013.62" y="575.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/logging/handlers.py:shouldRollover:154 (1 samples, 0.03%)</title><rect x="1179.0" y="325" width="0.4" height="15.0" fill="rgb(215,178,43)" rx="2" ry="2" />
+<text  x="1182.02" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:should_close:125 (1 samples, 0.03%)</title><rect x="1183.1" y="773" width="0.4" height="15.0" fill="rgb(233,23,27)" rx="2" ry="2" />
+<text  x="1186.09" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/client.py:setnx:1196 (1 samples, 0.03%)</title><rect x="1021.6" y="357" width="0.4" height="15.0" fill="rgb(240,157,18)" rx="2" ry="2" />
+<text  x="1024.60" y="367.5" ></text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/site-packages/gevent/builtins.py:__import__:94 (1 samples, 0.03%)</title><rect x="1012.7" y="501" width="0.4" height="15.0" fill="rgb(247,157,6)" rx="2" ry="2" />
+<text  x="1015.65" y="511.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/core/handlers/exception.py:inner:41 (412 samples, 14.20%)</title><rect x="1013.9" y="565" width="167.6" height="15.0" fill="rgb(250,133,42)" rx="2" ry="2" />
+<text  x="1016.87" y="575.5" >/usr/lib/python2.7/si..</text>
+</g>
+<g >
+<title>/usr/lib64/python2.7/collections.py:__init__:52 (1 samples, 0.03%)</title><rect x="1018.8" y="213" width="0.4" height="15.0" fill="rgb(240,0,39)" rx="2" ry="2" />
+<text  x="1021.76" y="223.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/contrib/sessions/backends/base.py:__init__:51 (1 samples, 0.03%)</title><rect x="1009.8" y="629" width="0.4" height="15.0" fill="rgb(226,87,20)" rx="2" ry="2" />
+<text  x="1012.81" y="639.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:make_node_obj:295 (1 samples, 0.03%)</title><rect x="1090.3" y="309" width="0.5" height="15.0" fill="rgb(234,21,37)" rx="2" ry="2" />
+<text  x="1093.34" y="319.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:send:646 (6 samples, 0.21%)</title><rect x="1023.6" y="325" width="2.5" height="15.0" fill="rgb(237,137,47)" rx="2" ry="2" />
+<text  x="1026.64" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/http/request.py:read:331 (1 samples, 0.03%)</title><rect x="1014.7" y="389" width="0.4" height="15.0" fill="rgb(209,184,34)" rx="2" ry="2" />
+<text  x="1017.69" y="399.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:populate_startup_nodes:314 (1 samples, 0.03%)</title><rect x="1134.7" y="325" width="0.4" height="15.0" fill="rgb(250,42,44)" rx="2" ry="2" />
+<text  x="1137.68" y="335.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/rediscluster/nodemanager.py:&lt;setcomp&gt;:318 (1 samples, 0.03%)</title><rect x="1167.2" y="293" width="0.4" height="15.0" fill="rgb(236,118,23)" rx="2" ry="2" />
+<text  x="1170.22" y="303.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/urllib3/poolmanager.py:connection_from_url:277 (1 samples, 0.03%)</title><rect x="1023.6" y="277" width="0.4" height="15.0" fill="rgb(230,49,51)" rx="2" ry="2" />
+<text  x="1026.64" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/django/dispatch/dispatcher.py:send:193 (2 samples, 0.07%)</title><rect x="1007.4" y="773" width="0.8" height="15.0" fill="rgb(253,163,34)" rx="2" ry="2" />
+<text  x="1010.37" y="783.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/gunicorn/http/message.py:__init__:53 (1 samples, 0.03%)</title><rect x="1005.7" y="789" width="0.4" height="15.0" fill="rgb(244,154,3)" rx="2" ry="2" />
+<text  x="1008.74" y="799.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/requests/sessions.py:send:646 (1 samples, 0.03%)</title><rect x="1177.8" y="341" width="0.4" height="15.0" fill="rgb(207,111,12)" rx="2" ry="2" />
+<text  x="1180.80" y="351.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/connection.py:_read_from_socket:174 (1 samples, 0.03%)</title><rect x="1135.9" y="277" width="0.4" height="15.0" fill="rgb(227,25,3)" rx="2" ry="2" />
+<text  x="1138.90" y="287.5" ></text>
+</g>
+<g >
+<title>/usr/lib/python2.7/site-packages/redis/_compat.py:_retryable_call:58 (1 samples, 0.03%)</title><rect x="1174.5" y="213" width="0.5" height="15.0" fill="rgb(209,176,39)" rx="2" ry="2" />
+<text  x="1177.54" y="223.5" ></text>
+</g>
+</g>
+</svg>
